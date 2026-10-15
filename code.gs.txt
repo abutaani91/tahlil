@@ -1,0 +1,300 @@
+/**
+ * تحليل — خلفية الاختبار الإلكتروني (Google Apps Script)
+ *
+ * الخطوات (مرة واحدة):
+ *  1) غيّر قيمة KEY أدناه إلى كلمة سر خاصة بك (لا تشاركها مع الطلبة).
+ *  2) من القائمة العلوية اختر الدالة setup ثم اضغط تشغيل ووافق على الصلاحيات.
+ *  3) نشر > نشر جديد > النوع: تطبيق ويب. التنفيذ باسم: أنا. من لديه صلاحية: أي شخص.
+ *  4) انسخ رابط التطبيق (ينتهي بـ /exec) والصقه مع كلمة السر في تبويب «إلكتروني» في تحليل.
+ *
+ * ما يُخزَّن هنا: أرقام الطلبة (لا أسماء) ورموز دخولهم وإجاباتهم وأزمنتهم. مفتاح الإجابة لا يُرسَل إلى هنا أبدًا.
+ */
+var KEY = 'CHANGE-ME';
+var GRACE_MS = 30000;          // سماحة بعد انتهاء الزمن لوصول آخر حفظ
+var CHUNK = 45000;             // حد الخلية في Sheets 50000 حرف
+var VERSION = 1;
+
+function setup() {
+  if (KEY === 'CHANGE-ME') throw new Error('غيّر قيمة KEY أولًا.');
+  var p = PropertiesService.getScriptProperties();
+  var id = p.getProperty('SSID');
+  if (!id) {
+    var ss = SpreadsheetApp.create('تحليل — نتائج الاختبارات الإلكترونية');
+    p.setProperty('SSID', ss.getId());
+    id = ss.getId();
+  }
+  var ss2 = SpreadsheetApp.openById(id);
+  sheet_(ss2, 'exams', ['id', 'title', 'minutes', 'n', 'status', 'created', 'shuffle', 'chunks']);
+  sheet_(ss2, 'defs', ['id', 'idx', 'chunk']);
+  return ss2.getUrl();
+}
+
+function doGet() {
+  return out_({ ok: true, app: 'tahlil', v: VERSION });
+}
+
+function doPost(e) {
+  var r;
+  try {
+    var req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    r = route_(req);
+  } catch (err) {
+    r = { ok: false, e: 'server', m: String(err && err.message || err) };
+  }
+  return out_(r);
+}
+
+function out_(o) {
+  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function now_() {
+  return (typeof __NOW !== 'undefined' && __NOW) ? __NOW() : Date.now();
+}
+
+var TEACHER = { ping: 1, publish: 1, status: 1, results: 1, setstatus: 1, reset: 1, remove: 1 };
+var WRITES = { publish: 1, setstatus: 1, reset: 1, remove: 1, start: 1, save: 1, submit: 1 };
+
+function route_(q) {
+  var a = String(q.a || '');
+  if (TEACHER[a]) {
+    if (KEY === 'CHANGE-ME' || String(q.k || '') !== KEY) return { ok: false, e: 'auth' };
+  } else if (a !== 'start' && a !== 'save' && a !== 'submit') {
+    return { ok: false, e: 'bad' };
+  }
+  if (a === 'ping') return { ok: true, v: VERSION, ready: !!PropertiesService.getScriptProperties().getProperty('SSID') };
+  if (!PropertiesService.getScriptProperties().getProperty('SSID')) return { ok: false, e: 'nosetup' };
+  var lock = null;
+  if (WRITES[a]) {
+    lock = LockService.getScriptLock();
+    try { lock.waitLock(8000); } catch (x) { return { ok: false, e: 'busy' }; }
+  }
+  try {
+    switch (a) {
+      case 'publish': return publish_(q);
+      case 'status': return status_(q);
+      case 'results': return results_(q);
+      case 'setstatus': return setstatus_(q);
+      case 'reset': return reset_(q);
+      case 'remove': return remove_(q);
+      case 'start': return start_(q);
+      case 'save': return save_(q, false);
+      case 'submit': return save_(q, true);
+    }
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+  return { ok: false, e: 'bad' };
+}
+
+/* ---------- أدوات الجداول ---------- */
+function ss_() { return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SSID')); }
+
+function sheet_(ss, name, head) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) { sh = ss.insertSheet(name); if (head) sh.appendRow(head); }
+  return sh;
+}
+
+function validId_(id) { return /^[A-Za-z0-9_-]{4,40}$/.test(String(id || '')); }
+
+function examRow_(ss, id) {
+  var sh = ss.getSheetByName('exams');
+  var n = sh.getLastRow();
+  if (n < 2) return null;
+  var v = sh.getRange(2, 1, n - 1, 8).getValues();
+  for (var i = 0; i < v.length; i++) {
+    if (String(v[i][0]) === id) {
+      return { row: i + 2, id: id, title: String(v[i][1]), minutes: Number(v[i][2]), n: Number(v[i][3]), status: String(v[i][4]), created: Number(v[i][5]), shuffle: Number(v[i][6]) === 1, chunks: Number(v[i][7]), sh: sh };
+    }
+  }
+  return null;
+}
+
+function codesSheet_(ss, id) { return ss.getSheetByName('c_' + id); }
+
+/* الأعمدة في c_<id>: 1 code('c'+..) 2 no 3 startedAt 4 deadline 5 submittedAt 6 ans('a'+..) 7 tm('t'+..) 8 lastSave */
+function readCodes_(sh) {
+  var n = sh.getLastRow();
+  if (n < 2) return [];
+  return sh.getRange(2, 1, n - 1, 8).getValues();
+}
+
+function findCode_(sh, code) {
+  var n = sh.getLastRow();
+  if (n < 2) return 0;
+  var col = sh.getRange(2, 1, n - 1, 1).getValues();
+  var want = 'c' + code;
+  for (var i = 0; i < col.length; i++) if (String(col[i][0]) === want) return i + 2;
+  return 0;
+}
+
+function defOf_(ss, ex) {
+  var cache = CacheService.getScriptCache();
+  var key = 'def_' + ex.id;
+  var hit = cache.get(key);
+  if (hit) return hit;
+  var sh = ss.getSheetByName('defs');
+  var n = sh.getLastRow();
+  var parts = [];
+  if (n >= 2) {
+    var v = sh.getRange(2, 1, n - 1, 3).getValues();
+    for (var i = 0; i < v.length; i++) if (String(v[i][0]) === ex.id) parts[Number(v[i][1])] = String(v[i][2]);
+  }
+  var s = parts.join('');
+  try { if (s.length < 90000) cache.put(key, s, 21600); } catch (x) { /* التخزين المؤقت اختياري */ }
+  return s;
+}
+
+/* ---------- المعلم ---------- */
+function publish_(q) {
+  var id = String(q.id || '');
+  if (!validId_(id)) return { ok: false, e: 'id' };
+  var title = String(q.title || '').slice(0, 200);
+  var minutes = Math.round(Number(q.minutes));
+  if (!(minutes >= 1 && minutes <= 600)) return { ok: false, e: 'minutes' };
+  var def = q.def;
+  if (!def || !def.items || !def.items.length || def.items.length > 100) return { ok: false, e: 'def' };
+  var codes = q.codes;
+  if (!codes || !codes.length || codes.length > 400) return { ok: false, e: 'codes' };
+  var seen = {}, i;
+  for (i = 0; i < codes.length; i++) {
+    var c = String(codes[i].code || '');
+    if (!/^[0-9]{6}$/.test(c) || seen[c]) return { ok: false, e: 'codes' };
+    seen[c] = 1;
+  }
+  var ss = ss_();
+  if (examRow_(ss, id)) return { ok: false, e: 'exists' };
+  var s = JSON.stringify(def);
+  var chunks = Math.ceil(s.length / CHUNK);
+  var ds = ss.getSheetByName('defs');
+  var rows = [];
+  for (i = 0; i < chunks; i++) rows.push([id, i, s.substr(i * CHUNK, CHUNK)]);
+  ds.getRange(ds.getLastRow() + 1, 1, rows.length, 3).setValues(rows);
+  var cs = ss.insertSheet('c_' + id);
+  cs.appendRow(['code', 'no', 'startedAt', 'deadline', 'submittedAt', 'ans', 'tm', 'lastSave']);
+  var cr = codes.map(function (x) { return ['c' + x.code, Number(x.no) || 0, '', '', '', '', '', '']; });
+  cs.getRange(2, 1, cr.length, 8).setValues(cr);
+  ss.getSheetByName('exams').appendRow([id, title, minutes, def.items.length, 'open', now_(), q.shuffle ? 1 : 0, chunks]);
+  return { ok: true, id: id, students: cr.length, chunks: chunks };
+}
+
+function status_(q) {
+  var ss = ss_(), ex = examRow_(ss, String(q.id || ''));
+  if (!ex) return { ok: false, e: 'none' };
+  var v = readCodes_(codesSheet_(ss, ex.id)), t = now_(), list = [];
+  for (var i = 0; i < v.length; i++) {
+    var st = v[i][4] !== '' ? 'done' : v[i][2] !== '' ? (t > Number(v[i][3]) + GRACE_MS ? 'over' : 'run') : 'new';
+    var ans = String(v[i][5] || '').slice(1), k = 0;
+    for (var j = 0; j < ans.length; j++) if (ans.charAt(j) !== '0') k++;
+    list.push({ no: Number(v[i][1]), st: st, k: k, last: v[i][7] === '' ? 0 : Number(v[i][7]) });
+  }
+  return { ok: true, status: ex.status, title: ex.title, minutes: ex.minutes, n: ex.n, now: t, list: list };
+}
+
+function results_(q) {
+  var ss = ss_(), ex = examRow_(ss, String(q.id || ''));
+  if (!ex) return { ok: false, e: 'none' };
+  var v = readCodes_(codesSheet_(ss, ex.id)), t = now_(), rows = [];
+  for (var i = 0; i < v.length; i++) {
+    if (v[i][2] === '') continue;
+    var done = v[i][4] !== '' || t > Number(v[i][3]) + GRACE_MS;
+    if (!done && !q.partial) continue;
+    rows.push({ no: Number(v[i][1]), done: done, ans: String(v[i][5] || '').slice(1), tm: String(v[i][6] || '').slice(1), sub: v[i][4] === '' ? 0 : Number(v[i][4]), started: Number(v[i][2]) });
+  }
+  return { ok: true, n: ex.n, rows: rows };
+}
+
+function setstatus_(q) {
+  var ss = ss_(), ex = examRow_(ss, String(q.id || ''));
+  if (!ex) return { ok: false, e: 'none' };
+  var s = q.status === 'closed' ? 'closed' : 'open';
+  ex.sh.getRange(ex.row, 5).setValue(s);
+  return { ok: true, status: s };
+}
+
+function reset_(q) {
+  var ss = ss_(), ex = examRow_(ss, String(q.id || ''));
+  if (!ex) return { ok: false, e: 'none' };
+  var sh = codesSheet_(ss, ex.id), n = sh.getLastRow();
+  if (n < 2) return { ok: false, e: 'none' };
+  var v = sh.getRange(2, 1, n - 1, 2).getValues();
+  for (var i = 0; i < v.length; i++) {
+    if (Number(v[i][1]) === Number(q.no)) {
+      sh.getRange(i + 2, 3, 1, 6).setValues([['', '', '', '', '', '']]);
+      return { ok: true };
+    }
+  }
+  return { ok: false, e: 'none' };
+}
+
+function remove_(q) {
+  var ss = ss_(), id = String(q.id || ''), ex = examRow_(ss, id);
+  if (!ex) return { ok: false, e: 'none' };
+  var cs = codesSheet_(ss, id);
+  if (cs) ss.deleteSheet(cs);
+  var ds = ss.getSheetByName('defs'), n = ds.getLastRow();
+  if (n >= 2) {
+    var v = ds.getRange(2, 1, n - 1, 1).getValues();
+    for (var i = v.length - 1; i >= 0; i--) if (String(v[i][0]) === id) ds.deleteRow(i + 2);
+  }
+  ex.sh.deleteRow(ex.row);
+  try { CacheService.getScriptCache().remove('def_' + id); } catch (x) { /* لا شيء */ }
+  return { ok: true };
+}
+
+/* ---------- الطالب ---------- */
+function failGate_(id, bump) {
+  var cache = CacheService.getScriptCache(), key = 'fail_' + id;
+  var n = Number(cache.get(key) || 0);
+  if (bump) { n++; try { cache.put(key, String(n), 600); } catch (x) { /* لا شيء */ } }
+  return n;
+}
+
+function start_(q) {
+  var id = String(q.id || ''), code = String(q.code || '');
+  if (!validId_(id) || !/^[0-9]{6}$/.test(code)) return { ok: false, e: 'code' };
+  if (failGate_(id, false) > 80) return { ok: false, e: 'locked' };
+  var ss = ss_(), ex = examRow_(ss, id);
+  if (!ex) { failGate_(id, true); return { ok: false, e: 'none' }; }
+  var sh = codesSheet_(ss, id), row = findCode_(sh, code);
+  if (!row) { failGate_(id, true); return { ok: false, e: 'code' }; }
+  var r = sh.getRange(row, 1, 1, 8).getValues()[0], t = now_();
+  if (r[4] !== '') return { ok: true, done: true, title: ex.title };
+  if (r[2] === '') {
+    if (ex.status !== 'open') return { ok: false, e: 'closed' };
+    var dl = t + ex.minutes * 60000;
+    sh.getRange(row, 3, 1, 2).setValues([[t, dl]]);
+    r[2] = t; r[3] = dl;
+  } else if (t > Number(r[3]) + GRACE_MS) {
+    sh.getRange(row, 5).setValue(t);
+    return { ok: true, done: true, late: true, title: ex.title };
+  }
+  return {
+    ok: true, done: false, title: ex.title, n: ex.n, minutes: ex.minutes, shuffle: ex.shuffle,
+    deadline: Number(r[3]), now: t, seed: Number(r[1]) || 1,
+    ans: String(r[5] || '').slice(1), tm: String(r[6] || '').slice(1),
+    def: defOf_(ss, ex)
+  };
+}
+
+function save_(q, final) {
+  var id = String(q.id || ''), code = String(q.code || '');
+  if (!validId_(id) || !/^[0-9]{6}$/.test(code)) return { ok: false, e: 'code' };
+  var ss = ss_(), ex = examRow_(ss, id);
+  if (!ex) return { ok: false, e: 'none' };
+  var ans = String(q.ans || ''), tm = String(q.tm || '');
+  if (ans.length !== ex.n || !/^[0-4]+$/.test(ans)) return { ok: false, e: 'ans' };
+  if (tm.length > 800 || !/^[0-9,]*$/.test(tm)) tm = '';
+  var sh = codesSheet_(ss, id), row = findCode_(sh, code);
+  if (!row) return { ok: false, e: 'code' };
+  var r = sh.getRange(row, 1, 1, 8).getValues()[0], t = now_();
+  if (r[2] === '') return { ok: false, e: 'notstarted' };
+  if (r[4] !== '') return { ok: true, done: true };
+  if (t > Number(r[3]) + GRACE_MS) {
+    sh.getRange(row, 5).setValue(t);
+    return { ok: false, e: 'late', done: true };
+  }
+  sh.getRange(row, 5, 1, 4).setValues([[final ? t : '', 'a' + ans, 't' + tm, t]]);
+  return { ok: true, done: !!final, now: t, deadline: Number(r[3]) };
+}

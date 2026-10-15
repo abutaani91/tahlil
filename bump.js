@@ -7,4 +7,7 @@ fs.writeFileSync('sw.js', sw);
 let app = fs.readFileSync('app.js', 'utf8');
 app = app.replace(/var APP_VERSION = \d+/, 'var APP_VERSION = ' + v);
 fs.writeFileSync('app.js', app);
-console.log('الإصدار الآن', v);
+let ex = fs.readFileSync('exam/sw.js', 'utf8');
+ex = ex.replace(/var VERSION = (\d+)/, (m, n) => 'var VERSION = ' + (+n + 1));
+fs.writeFileSync('exam/sw.js', ex);
+console.log('الإصدار الآن', v, '(وصفحة الطالب', ex.match(/var VERSION = (\d+)/)[1] + ')');
