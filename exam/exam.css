@@ -47,3 +47,4 @@ summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:
 #toast{position:fixed;inset-inline:16px;bottom:96px;margin:auto;max-width:420px;background:#14282B;color:#fff;padding:10px 14px;border-radius:10px;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
 #toast.on{opacity:1}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.opt:disabled{cursor:not-allowed}

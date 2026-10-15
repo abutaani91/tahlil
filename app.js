@@ -1,7 +1,7 @@
 /* app.js — واجهة «تحليل». بيانات المعلم كلها في localStorage على جهازه، ولا شيء يُرسَل إلى أي خادم. */
 (function () {
   'use strict';
-  var APP_VERSION = 4;
+  var APP_VERSION = 5;
   var KEY = 'tahlil.db.v1';
   var LET = ['—', 'أ', 'ب', 'ج', 'د'];
   var esc = Sheet.esc;
@@ -522,11 +522,17 @@
           return r;
         }).join('') + '</tbody></table></div></div>';
     } else if (ui.atab === 'stu') {
+      var ro = t.online, rmin = (ro && ro.minSec) || 5, hasT = t.students.some(function (s) { return s.src === 'online' && s.tm && s.tm.length === t.n; });
+      var rapid = function (s) {
+        if (!(s.src === 'online' && s.tm && s.tm.length === t.n && s.ans)) return null;
+        var an = 0, fs = 0; s.ans.forEach(function (v, i) { if (v) { an++; if ((s.tm[i] || 0) < rmin) fs++; } });
+        return { an: an, fast: fs, rte: an ? (an - fs) / an : 1 };
+      };
       var rows = a.rows.slice(); if (ui.sortRank) rows.sort(function (x, y) { return x.rank - y.rank || x.s.no - y.s.no; }); else rows.sort(function (x, y) { return x.s.no - y.s.no; });
-      h += '<div class="card"><h2>الطلبة</h2><div class="btns" style="margin:0 0 10px"><button class="chip" data-act="sortrank" aria-pressed="' + ui.sortRank + '">ترتيب حسب الدرجة</button></div><div class="tw"><table><thead><tr><th>الرقم</th><th class="l">الاسم</th><th>الصحيحة</th><th>العلامة / ' + fmt(a.total, 0) + '</th><th>%</th><th>الترتيب</th>' +
+      h += '<div class="card"><h2>الطلبة</h2><div class="btns" style="margin:0 0 10px"><button class="chip" data-act="sortrank" aria-pressed="' + ui.sortRank + '">ترتيب حسب الدرجة</button></div><div class="tw"><table><thead><tr><th>الرقم</th><th class="l">الاسم</th><th>الصحيحة</th><th>العلامة / ' + fmt(a.total, 0) + '</th><th>%</th><th>الترتيب</th>' + (hasT ? '<th>سريعة (&lt;' + rmin + 'ث)</th><th>جهد الاستجابة</th>' : '') +
         a.outs.map(function (o) { return '<th>' + esc(o.name) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function (r) {
-          return '<tr><td>' + r.s.no + '</td><td class="l">' + esc(r.s.name) + '</td><td class="num">' + r.tot + ' / ' + a.m + '</td><td class="num">' + fmt(r.mark) + '</td><td class="num">' + pct(r.pct) + '</td><td>' + r.rank + '</td>' +
-            r.out.map(function (v) { return '<td class="num">' + (v === null ? '—' : pct(v) + (v < 0.6 ? ' ▾' : '')) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div><p class="hint">▾ تعني دون حد الإتقان (60%).</p></div>';
+          return '<tr><td>' + r.s.no + '</td><td class="l">' + esc(r.s.name) + '</td><td class="num">' + r.tot + ' / ' + a.m + '</td><td class="num">' + fmt(r.mark) + '</td><td class="num">' + pct(r.pct) + '</td><td>' + r.rank + '</td>' + (hasT ? (function () { var q = rapid(r.s); return q ? '<td class="num">' + q.fast + ' من ' + q.an + '</td><td class="num">' + pct(q.rte) + (q.rte < 0.9 ? ' <span class="tag rev">راجع</span>' : '') + '</td>' : '<td>—</td><td>—</td>'; })() : '') +
+            r.out.map(function (v) { return '<td class="num">' + (v === null ? '—' : pct(v) + (v < 0.6 ? ' ▾' : '')) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div><p class="hint">▾ تعني دون حد الإتقان (60%).' + (hasT ? ' «سريعة» هي الفقرات المجابة في زمن أقل من ' + rmin + ' ثوانٍ، و«جهد الاستجابة» نسبة الفقرات التي أُجيبت بزمن كافٍ. ما دون 90% مؤشر يستحق المراجعة (تخمين أو نقل) وليس دليل غش بذاته؛ راجع الطالب ثم قرّر.' : '') + '</p></div>';
     } else {
       h += '<div class="card"><h2>النتاجات</h2>' + (a.outs.length ? '<div class="tw"><table><thead><tr><th class="l">النتاج</th><th>الفقرات</th><th>متوسط الإتقان</th><th>دون الإتقان</th></tr></thead><tbody>' + a.outs.map(function (o) {
         return '<tr><td class="l">' + esc(o.name) + '</td><td>' + o.count + '</td><td class="num">' + pct(o.avg) + '</td><td>' + o.low + ' من ' + a.N + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="hint">لم تُضف نتاجات. أضفها من قسم الإعداد.</p>') + '</div>';
@@ -570,7 +576,7 @@
   var sheetOpt = { mode: 'blank', copies: 1 };
   function viewSheet(m) {
     var t = cur, g = Sheet.geom(t.n), hasS = t.students.length > 0;
-    var examCard = t.bank ? '<div class="card"><h2>ورقة الأسئلة (من البنك)</h2><p class="hint">تُطبع أسئلة الاختبار ' + t.n + ' فقرة بخيارات أ ب ج د، والطالب يظلّل إجابته في ورقة الإجابة أدناه.</p><div class="btns"><button class="btn" data-act="printexam">طباعة ورقة الأسئلة</button><button class="btn alt" data-act="printkey">طباعة المفتاح بالتعليل وجدول المواصفات</button></div></div>' : '';
+    var examCard = t.bank ? '<div class="card"><h2>ورقة الأسئلة (من البنك)</h2><p class="hint">تُطبع أسئلة الاختبار ' + t.n + ' فقرة بخيارات أ ب ج د، والطالب يظلّل إجابته في ورقة الإجابة أدناه.</p><div class="btns"><button class="btn" data-act="dlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="dlkey">تنزيل المفتاح والمواصفات (Word)</button></div><div class="btns"><button class="btn alt sm" data-act="printexam">طباعة مباشرة</button><button class="btn alt sm" data-act="printkey">طباعة المفتاح مباشرة</button></div></div>' : '';
     m.innerHTML = examCard + '<div class="card"><h2>طباعة ورقة الإجابة</h2><p class="hint">' + t.n + ' فقرة في ' + g.cols + ' أعمدة. اطبعها بحجم A4 بنسبة 100% (بلا «ملاءمة الصفحة») وعلى ورقة بيضاء. الورقة المطبوعة لكل طالب يأتي رقمه مظلَّلًا مسبقًا فلا يخطئ في تظليله.</p>' +
       '<div class="chips"><button class="chip" data-act="smode" data-m="blank" aria-pressed="' + (sheetOpt.mode === 'blank') + '">نسخ فارغة</button><button class="chip" data-act="smode" data-m="stu" aria-pressed="' + (sheetOpt.mode === 'stu') + '"' + (hasS ? '' : ' disabled') + '>ورقة لكل طالب (' + t.students.length + ')</button></div>' +
       (sheetOpt.mode === 'blank' ? '<div style="max-width:200px;margin-top:10px"><label for="cp">عدد النسخ</label><input id="cp" type="number" min="1" max="200" value="' + sheetOpt.copies + '"></div>' : '') +
@@ -692,7 +698,7 @@
       h += '<div class="card" id="bres"><h2>٣. الاختبار المسحوب (' + d.length + ' فقرة)</h2>' +
         '<div class="kpis"><div class="kpi"><div class="v">' + ld['ت'] + ' / ' + ld['ط'] + ' / ' + ld['ح'] + '</div><div class="l">تذكّر / تطبيق / تحليل</div></div><div class="kpi"><div class="v">' + kd.join(' / ') + '</div><div class="l">توزّع المفتاح أ / ب / ج / د</div></div>' + timeKpiHtml(d) + '</div><p class="hint">أزمنة الفقرات تقديرية: قراءة الفقرة وبدائلها بسرعة طالب (150 كلمة في الدقيقة) + زمن تفكير بحسب المستوى + زمن حساب إن كثرت الأرقام. عدّلها يدويًا لكل فقرة، وستُعايَر لاحقًا من أزمنة طلبتك الفعلية.</p>' +
         '<div class="grid g3" style="margin-top:12px"><div><label for="bt">عنوان الاختبار</label><input id="bt" type="text" data-bk="title" value="' + esc(b.title || defaultTitle()) + '"></div><div><label for="btot">العلامة الكلية</label><input id="btot" type="number" inputmode="decimal" min="1" data-bk="total" value="' + (b.total || d.length) + '"></div><div><label for="bmin">زمن الاختبار (دقيقة)</label><input id="bmin" type="number" inputmode="numeric" min="1" data-bk="minutes" value="' + (b.minutes || recMinutes(d)) + '"></div></div>' +
-        '<div class="btns"><button class="btn" data-act="bcreate">إنشاء الاختبار في «تحليل»</button><button class="btn alt" data-act="bprint">طباعة ورقة الأسئلة</button><button class="btn alt" data-act="bprintkey">طباعة المفتاح والمواصفات</button><button class="btn alt" data-act="bredraw">سحبة أخرى</button></div>' +
+        '<div class="btns"><button class="btn" data-act="bcreate">إنشاء الاختبار في «تحليل»</button><button class="btn" data-act="bdlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="bdlkey">تنزيل المفتاح والمواصفات (Word)</button><button class="btn alt" data-act="bredraw">سحبة أخرى</button><button class="btn alt" data-act="bprint">طباعة مباشرة</button><button class="btn alt" data-act="bprintkey">طباعة المفتاح مباشرة</button></div>' +
         '<div style="margin-top:12px">' + d.map(function (it, i) {
           var u = BX.byUnit[it.u], v = lg[it.id];
           return '<div class="bq"><div class="bqh"><b class="num">' + (i + 1) + '</b><span class="btag">' + esc(it.u) + ' · نتاج ' + it.o + '</span><span class="btag">' + Bank.LVL[it.lvl] + '</span><label class="btag" style="display:inline-flex;gap:4px;align-items:center;margin:0;font-weight:500">⏱ <input type="number" inputmode="numeric" min="10" max="600" value="' + itemSecs(it) + '" data-bk="sec" data-id="' + it.id + '" aria-label="زمن الفقرة ' + (i + 1) + ' بالثواني" style="width:64px;min-height:30px;padding:0 6px"> ث</label>' + (v ? '<span class="btag">آخر تحليل: P ' + v.P.toFixed(2) + ' · D ' + v.D.toFixed(2) + ' (ن=' + v.N + ')</span>' : '') + '<button class="btn alt sm" data-act="brep" data-i="' + i + '">استبدال</button></div>' +
@@ -848,19 +854,26 @@
     if (!nst) return h + '<p class="hint">أضف قائمة الطلبة أولًا من «الإعداد»، فيُنشأ لكل طالب رمز دخول خاص.</p><button class="btn" data-act="tab" data-tab="setup">الذهاب إلى الإعداد</button></div>';
     h += '<p class="hint">يُرسَل إلى الخادم: نص ' + n + ' فقرة بلا مفتاح، وأرقام ' + nst + ' طلاب مع رمز لكل طالب. تبقى الأسماء والمفتاح على جهازك.</p>' +
       '<div class="grid g2"><div><label for="o-min">الزمن بالدقائق</label><input id="o-min" type="number" inputmode="numeric" min="1" max="600" data-o="min" value="' + (t.minutes || recMinutes(t.bank.ids.map(function (id) { return BX && BX.byId[id]; }).filter(Boolean))) + '"></div>' +
-      '<div style="display:flex;align-items:flex-end"><label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" id="o-shuf" checked style="width:20px;height:20px"> ترتيب أسئلة مختلف لكل طالب</label></div></div>' +
+      '<div style="display:flex;align-items:flex-end"><label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" id="o-shuf" checked style="width:20px;height:20px"> ترتيب أسئلة مختلف لكل طالب</label></div>' +
+      '<div><label for="o-ms">الحد الأدنى لزمن الفقرة (ثانية)</label><input id="o-ms" type="number" inputmode="numeric" min="0" max="60" value="5"></div>' +
+      '<div style="display:flex;align-items:flex-end"><label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" id="o-lock" checked style="width:20px;height:20px"> امنع الإجابة قبل بلوغه</label></div></div>' +
+      '<p class="hint">الإجابة السريعة جدًا (أقل من الحد الأدنى) مؤشر على التخمين أو النقل. مع المنع لا يُظلَّل الجواب قبل مرور الثواني على الفقرة، ويُسجَّل زمن كل فقرة ويظهر لك عدد الإجابات السريعة لكل طالب أثناء الاختبار وفي التحليل. اكتب 0 لإلغاء الحد.</p>' +
       '<div class="notice">العدّاد يبدأ عند دخول الطالب برمزه ويُحسب على ساعة الخادم، فلا ينفع تغيير ساعة الجهاز. بعد النشر لا يمكن تعديل الأسئلة؛ للتعديل انشر نسخة جديدة.</div>' +
       '<div class="btns"><button class="btn" data-act="opub">نشر الاختبار الآن</button></div><div id="omsg" aria-live="polite"></div></div>';
     return h;
   }
   function liveCard(t, o) {
     var link = examLink(o), n = t.bank.ids.length;
-    var h = '<div class="card"><h2>٢. الاختبار منشور</h2><p class="hint">' + n + ' فقرة · ' + esc(o.minutes) + ' دقيقة · نُشر ' + hhmm(o.created) + (o.shuffle ? ' · ترتيب مختلف لكل طالب' : '') + '</p>' +
+    var h = '<div class="card"><h2>٢. الاختبار منشور</h2><p class="hint">' + n + ' فقرة · ' + esc(o.minutes) + ' دقيقة · نُشر ' + hhmm(o.created) + (o.shuffle ? ' · ترتيب مختلف لكل طالب' : '') + (o.minSec ? ' · حد أدنى ' + o.minSec + ' ث للفقرة' + (o.lock ? ' (مع المنع)' : ' (تسجيل فقط)') : '') + '</p>' +
       '<label for="o-link">رابط الطلبة</label><input id="o-link" type="text" readonly dir="ltr" value="' + esc(link) + '" onfocus="this.select()">' +
       '<div class="btns"><button class="btn" data-act="ocopy">نسخ الرابط</button><button class="btn alt" data-act="oslips">طباعة بطاقات الرموز</button><button class="btn alt" data-act="oposter">طباعة رمز QR للعرض</button></div>' +
       '<div class="qrbox" id="oqr" aria-label="رمز QR لرابط الاختبار">' + qrSvg(link) + '</div></div>';
     h += '<div class="card"><h2>٣. المتابعة</h2><div id="ostat"></div>' +
       '<div class="btns"><button class="btn alt" data-act="orefresh">تحديث الآن</button><button class="btn alt" data-act="otoggle" id="otog">…</button></div></div>';
+    h += '<div class="card"><h2>التحكم بالوقت</h2><p class="hint">التمديد يضاف إلى وقت كل من يجيب الآن وإلى زمن من لم يبدأ بعد، ويصل أجهزة الطلبة خلال 15 ثانية. للطالب الواحد استعمل زر «+5 د» في جدول المتابعة.</p>' +
+      '<div class="btns"><button class="btn alt" data-act="oext" data-m="5">+5 دقائق للجميع</button><button class="btn alt" data-act="oext" data-m="10">+10 دقائق</button><button class="btn alt" data-act="oext" data-m="15">+15 دقيقة</button></div>' +
+      '<div class="grid g2" style="margin-top:10px;align-items:end"><div><label for="o-ext">تمديد مخصص (دقائق)</label><input id="o-ext" type="number" inputmode="numeric" min="1" max="240" placeholder="مثال: 7"></div><div><button class="btn alt" data-act="oextc">تمديد للجميع</button></div></div>' +
+      '<div class="btns"><button class="btn danger" data-act="oend">إنهاء الاختبار الآن للجميع</button></div><div id="tmsg" aria-live="polite"></div></div>';
     h += '<div class="card"><h2>٤. سحب النتائج إلى التحليل</h2><p class="hint">تُسحب إجابات من سلّم أو انتهى وقته فقط. يُستبدل ما أُدخل سابقًا لهؤلاء الطلبة.</p>' +
       '<div class="btns"><button class="btn" data-act="opull">سحب النتائج</button><button class="btn alt" data-act="tab" data-tab="analysis">الذهاب إلى التحليل</button></div><div id="pullmsg" aria-live="polite">' + (o.pulled ? '<div class="notice ok">آخر سحب ' + hhmm(o.pulled.t) + ': ' + o.pulled.n + ' طالبًا.</div>' : '') + '</div></div>';
     h += calCard(t);
@@ -879,12 +892,13 @@
     var rows = stuRows(t).map(function (s) {
       var x = by[s.no], k = x ? x.st : 'new'; cnt[k]++;
       var lab = { new: '<span class="tag">لم يبدأ</span>', run: '<span class="tag rev">يجيب ' + (x ? x.k : 0) + '/' + st.res.n + '</span>', done: '<span class="tag ok">سلّم ✓</span>', over: '<span class="tag key">انتهى الوقت</span>' }[k];
-      return '<tr><td>' + s.no + '</td><td class="l nm">' + esc(s.name) + '</td><td class="num">' + esc(o.codes[s.no] || '—') + '</td><td>' + lab + '</td><td class="num">' + (x && x.last ? hhmm(x.last) : '—') + '</td><td>' + (k !== 'new' ? '<button class="btn alt sm" data-act="oreset" data-no="' + s.no + '" aria-label="إعادة فتح المحاولة لـ ' + esc(s.name) + '">إعادة فتح</button>' : '') + '</td></tr>';
+      return '<tr><td>' + s.no + '</td><td class="l nm">' + esc(s.name) + '</td><td class="num">' + esc(o.codes[s.no] || '—') + '</td><td>' + lab + '</td><td class="num">' + (k === 'run' ? fmtLeft(x.dl - st.res.now - (Date.now() - st.t)) : '—') + '</td><td class="num">' + (x && st.res.minSec ? (x.fast ? '<span class="tag rej">' + x.fast + '</span>' : '0') : '—') + '</td><td style="white-space:nowrap">' + (k === 'run' || k === 'over' ? '<button class="btn alt sm" data-act="oext" data-m="5" data-no="' + s.no + '" aria-label="تمديد خمس دقائق لـ ' + esc(s.name) + '">+5 د</button> ' : '') + (k !== 'new' ? '<button class="btn alt sm" data-act="oreset" data-no="' + s.no + '" aria-label="إعادة فتح المحاولة لـ ' + esc(s.name) + '">إعادة فتح</button>' : '') + '</td></tr>';
     }).join('');
     box.innerHTML = '<div class="kpis"><div class="kpi"><div class="v">' + cnt.done + '</div><div class="l">سلّموا</div></div><div class="kpi"><div class="v">' + cnt.run + '</div><div class="l">يجيبون الآن</div></div><div class="kpi"><div class="v">' + cnt.over + '</div><div class="l">انتهى وقتهم</div></div><div class="kpi"><div class="v">' + cnt.new + '</div><div class="l">لم يبدؤوا</div></div></div>' +
-      '<div class="tw" style="margin-top:10px"><table><thead><tr><th>الرقم</th><th class="l">الاسم</th><th>الرمز</th><th>الحالة</th><th>آخر حفظ</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div><p class="hint">آخر تحديث ' + hhmm(st.t) + ' · يتجدد كل 15 ثانية.</p>';
+      '<div class="tw" style="margin-top:10px"><table><thead><tr><th>الرقم</th><th class="l">الاسم</th><th>الرمز</th><th>الحالة</th><th>المتبقي</th><th>سريعة</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div><p class="hint">آخر تحديث ' + hhmm(st.t) + ' · يتجدد كل 15 ثانية.</p>';
     var tg = $('#otog'); if (tg) tg.textContent = st.res.status === 'open' ? 'إغلاق باب الدخول' : 'فتح باب الدخول';
   }
+  function fmtLeft(ms) { var s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ':' + (s % 60 < 10 ? '0' : '') + (s % 60); }
   function refreshStat() {
     var t = cur; if (!t || !t.online) return;
     var id = t.online.id;
@@ -909,7 +923,8 @@
     }, function (e) { gasPut(null); gmsg('<div class="notice bad">' + esc(e.message) + '</div>'); });
   }
   function onlinePublish() {
-    var t = cur, c = gasCfg(), mins = parseInt($('#o-min').value, 10), shuf = $('#o-shuf').checked;
+    var t = cur, c = gasCfg(), mins = parseInt($('#o-min').value, 10), shuf = $('#o-shuf').checked, ms = parseInt($('#o-ms').value, 10), lock = $('#o-lock').checked;
+    if (!(ms >= 0 && ms <= 60)) ms = 5;
     if (!(mins >= 1 && mins <= 600)) { omsg('<div class="notice bad">أدخل زمنًا بين 1 و600 دقيقة.</div>'); return; }
     withBank(function () {
       var items = t.bank.ids.map(function (id) { return BX.byId[id]; });
@@ -917,9 +932,9 @@
       var codes = genCodes(t), id = uid().replace(/[^a-z0-9]/g, '').slice(-9).padStart(8, 'x');
       var def = { items: items.map(function (it) { return { q: it.q, op: it.op }; }) };
       omsg('<div class="notice">جارٍ النشر…</div>');
-      gcall({ a: 'publish', id: id, title: t.title, minutes: mins, def: def, shuffle: shuf, codes: t.students.map(function (s) { return { no: s.no, code: codes[s.no] }; }) }).then(function (j) {
+      gcall({ a: 'publish', id: id, title: t.title, minutes: mins, def: def, shuffle: shuf, minSec: ms, lock: lock, codes: t.students.map(function (s) { return { no: s.no, code: codes[s.no] }; }) }).then(function (j) {
         if (!j.ok) { omsg('<div class="notice bad">' + esc(gerr(j)) + '</div>'); return; }
-        t.minutes = mins; t.online = { id: id, url: c.url, created: Date.now(), minutes: mins, shuffle: shuf, codes: codes }; save(); ui.ostat = null; toast('نُشر الاختبار'); render();
+        t.minutes = mins; t.online = { id: id, url: c.url, created: Date.now(), minutes: mins, shuffle: shuf, minSec: ms, lock: lock && ms > 0, codes: codes }; save(); ui.ostat = null; toast('نُشر الاختبار'); render();
       }, function (e) { omsg('<div class="notice bad">' + esc(e.message) + '</div>'); });
     });
   }
@@ -976,6 +991,15 @@
     var link = examLink(o);
     return '<div class="rp poster"><h1>' + esc(t.title) + '</h1><div class="hd">' + esc([t.subject, t.cls].filter(Boolean).join(' · ')) + ' · الزمن ' + esc(o.minutes) + ' دقيقة</div><div class="pq">' + qrSvg(link) + '</div><p class="hd">امسح الرمز بكاميرا هاتفك ثم أدخل رمزك الخاص</p></div>';
   }
+  function extendNow(mins, no) {
+    var o = cur.online, body = { a: 'extend', id: o.id, mins: mins }; if (no !== null) body.no = no;
+    gcall(body).then(function (j) {
+      if (!j.ok) { toast(gerr(j)); return; }
+      if (no === null) { o.minutes = j.minutes; save(); }
+      toast(no === null ? 'مُدِّد الوقت ' + mins + ' دقائق للجميع (' + j.changed + ' يجيبون الآن)' : (j.changed ? 'مُدِّد وقت الطالب ' + mins + ' دقائق' : 'لا محاولة جارية لهذا الطالب'));
+      refreshStat();
+    }, function (e) { toast(e.message); });
+  }
   function onlineChange(el) {
     if (el.dataset.o === 'min') { var v = parseInt(el.value, 10); if (v >= 1 && v <= 600) { cur.minutes = v; save(); } else el.value = cur.minutes || ''; }
   }
@@ -993,12 +1017,71 @@
       case 'oposter': doPrint(posterHtml(t, o), false); break;
       case 'orefresh': refreshStat(); break;
       case 'otoggle': var cur0 = ui.ostat && ui.ostat.res ? ui.ostat.res.status : 'open'; gcall({ a: 'setstatus', id: o.id, status: cur0 === 'open' ? 'closed' : 'open' }).then(function (j) { if (j.ok) { toast(j.status === 'open' ? 'فُتح باب الدخول' : 'أُغلق باب الدخول (من بدأ يكمل)'); refreshStat(); } else toast(gerr(j)); }, function (e) { toast(e.message); }); break;
+      case 'oext': extendNow(+el.dataset.m, el.dataset.no ? +el.dataset.no : null); break;
+      case 'oextc': var ev = parseInt($('#o-ext').value, 10); if (!(ev >= 1 && ev <= 240)) { var tm0 = $('#tmsg'); if (tm0) tm0.innerHTML = '<div class="notice bad">أدخل عددًا من الدقائق بين 1 و240.</div>'; break; } extendNow(ev, null); break;
+      case 'oend': if (confirm('إنهاء الاختبار الآن؟ يُغلق الدخول ويُسلَّم ما أجابه كل طالب تلقائيًا.')) gcall({ a: 'endnow', id: o.id }).then(function (j) { toast(j.ok ? 'أُنهي الاختبار (' + j.changed + ' طالبًا كانوا يجيبون)' : gerr(j)); refreshStat(); }, function (e) { toast(e.message); }); break;
       case 'opull': onlinePull(); break;
       case 'ocal': onlineCal(); break;
       case 'oreset': var s = findStu(t, +el.dataset.no); if (confirm('إعادة فتح محاولة «' + s.name + '»؟ تُمسح إجاباته على الخادم ويبدأ من جديد برمزه نفسه.')) gcall({ a: 'reset', id: o.id, no: s.no }).then(function (j) { toast(j.ok ? 'أُعيد فتح المحاولة' : gerr(j)); refreshStat(); }, function (e) { toast(e.message); }); break;
       case 'onew': if (confirm('فصل هذا الاختبار عن الخادم لنشره من جديد؟ الإجابات التي سحبتها تبقى في التحليل، وما لم تسحبه يبقى على الخادم ولا يُسحب بعد ذلك.')) { delete t.online; save(); ui.ostat = null; render(); } break;
       case 'oremove': if (confirm('حذف الأسئلة والرموز والإجابات غير المسحوبة من الخادم نهائيًا؟ اسحب النتائج أولًا.')) gcall({ a: 'remove', id: o.id }).then(function (j) { if (j.ok || j.e === 'none') { delete t.online; save(); ui.ostat = null; toast('حُذف النشر من الخادم'); render(); } else toast(gerr(j)); }, function (e) { toast(e.message); }); break;
     }
+  }
+
+
+  /* ---------- تصدير Word (.docx) ---------- */
+  function wordDownload(t, kind) {
+    try {
+      var items = t.bank.ids.map(function (id) { return BX.byId[id]; }).filter(Boolean), n = items.length, d = Docx.doc({ footer: t.title });
+      var sub = [t.subject, t.cls].filter(Boolean).join(' · ');
+      if (kind === 'exam') {
+        d.table([[{ t: db.set.school || '', size: 11 }, { t: db.set.teacher ? 'المعلم: ' + db.set.teacher : '', size: 11, align: 'center' }]], { borders: false, widths: [4819, 4819] });
+        d.p(t.title, { align: 'center', bold: true, size: 17, after: 40 });
+        d.p(sub + ' · ' + n + ' فقرة · العلامة الكلية ' + t.total + (t.minutes ? ' · الزمن ' + t.minutes + ' دقيقة' : ''), { align: 'center', color: '333333', size: 10.5 });
+        d.p('الاسم: ................................................     الشعبة: ..........     التاريخ: ..../..../........', { before: 120, after: 100, border: true, size: 11 });
+        d.p('اقرأ كل فقرة جيدًا ثم ظلّل الدائرة التي تدل على الإجابة الصحيحة في ورقة الإجابة. لكل فقرة إجابة واحدة صحيحة.', { color: '444444', size: 10, after: 160 });
+        items.forEach(function (it, i) {
+          d.p('<b>' + (i + 1) + '.</b> ' + it.q, { keepNext: true, size: 12, after: 50 });
+          var short = it.op.every(function (o) { return Bank.plain(o).length <= 26; }), c = it.op.map(function (o, k) { return { t: LETS[k] + ') ' + o, size: 11.5 }; });
+          if (short) d.table([c], { borders: false });
+          else d.table([[c[0], c[1]], [c[2], c[3]]], { borders: false, widths: [4819, 4819] });
+        });
+        d.p('— انتهت الأسئلة —', { align: 'center', color: '444444', before: 120 });
+      } else {
+        d.p('مفتاح الإجابة وجدول المواصفات', { align: 'center', bold: true, size: 17, after: 40 });
+        d.p([db.set.school, t.title, sub].filter(Boolean).join(' · '), { align: 'center', color: '333333', size: 10.5 });
+        d.p('١. مفتاح الإجابة', { bold: true, size: 13, color: '0E5A5C', border: true, before: 160 });
+        var kr = [];
+        for (var r = 0; r < n; r += 10) {
+          var row = [];
+          for (var c2 = r; c2 < r + 10; c2++) { if (c2 < n) { row.push({ t: String(c2 + 1), shade: 'E3EFEE', align: 'center', size: 9 }); row.push({ t: '<b>' + (t.key[c2] ? LETS[t.key[c2] - 1] : '—') + '</b>', align: 'center', size: 11 }); } else { row.push(''); row.push(''); } }
+          kr.push(row);
+        }
+        var kw = []; for (var q = 0; q < 10; q++) { kw.push(381); kw.push(582); }
+        d.table(kr, { widths: kw });
+        d.p('٢. جدول المواصفات', { bold: true, size: 13, color: '0E5A5C', border: true, before: 120 });
+        var secArr = (t.bank.secs && t.bank.secs.length === n) ? t.bank.secs : items.map(itemSecs), tot = { 'ت': 0, 'ط': 0, 'ح': 0 }, totSec = 0;
+        var H = function (x) { return { t: x, bold: true, shade: 'E3EFEE', align: 'center', size: 9 }; };
+        var rows = [[H('النتاج'), H('أرقام الفقرات'), H('العدد'), H('تذكّر وفهم'), H('تطبيق'), H('تحليل'), H('الزمن (د)')]];
+        t.outcomes.forEach(function (o) {
+          var l = { 'ت': 0, 'ط': 0, 'ح': 0 }, sec = 0; o.items.forEach(function (ix) { if (items[ix]) { l[items[ix].lvl]++; tot[items[ix].lvl]++; sec += secArr[ix] || 0; } });
+          totSec += sec;
+          rows.push([{ t: o.name, size: 9 }, { t: rangeStr(o.items), align: 'center', size: 9 }, { t: String(o.items.length), align: 'center' }, { t: String(l['ت']), align: 'center' }, { t: String(l['ط']), align: 'center' }, { t: String(l['ح']), align: 'center' }, { t: String(Math.round(sec / 60)), align: 'center' }]);
+        });
+        var P = function (v) { return v + ' (' + Math.round(100 * v / n) + '%)'; };
+        rows.push([H('المجموع'), H(''), H(String(n)), H(P(tot['ت'])), H(P(tot['ط'])), H(P(tot['ح'])), H(Math.round(totSec / 60) + (t.minutes ? ' (المقرَّر ' + t.minutes + ')' : ''))]);
+        d.table(rows, { widths: [3100, 1400, 800, 1000, 1000, 1000, 1338], headRows: 1 });
+        d.p('٣. تعليل البدائل', { bold: true, size: 13, color: '0E5A5C', border: true, before: 160, pageBreakBefore: true });
+        items.forEach(function (it, i) {
+          var k = t.key[i] ? t.key[i] - 1 : it.a;
+          d.p('<b>' + (i + 1) + '.</b> ' + it.q, { keepNext: true, size: 11, before: 100, after: 30 });
+          d.p('الإجابة الصحيحة: <b>' + LETS[k] + ') ' + it.op[k] + '</b>', { size: 10.5, color: '0B5D3B', indent: 360, after: 20 });
+          it.op.forEach(function (o, j) { if (j !== k && it.fb[j]) d.p('– ' + LETS[j] + ') ' + it.fb[j], { size: 10, indent: 360, after: 10, color: '333333' }); });
+        });
+      }
+      download(safeName(t.title) + (kind === 'exam' ? ' - الأسئلة.docx' : ' - المفتاح والمواصفات.docx'), d.blob());
+      toast('نُزّل ملف Word');
+    } catch (e) { toast('تعذّر إنشاء ملف Word: ' + e.message); }
   }
 
   /* ---------- الأحداث ---------- */
@@ -1049,6 +1132,10 @@
       case 'bcreate': bankCreate(); break;
       case 'bprint': withBank(function () { doPrint(examHtml(bankPseudoTest()), false); }); break;
       case 'bprintkey': withBank(function () { doPrint(keyHtml(bankPseudoTest()), false); }); break;
+      case 'dlexam': withBank(function () { wordDownload(t, 'exam'); }); break;
+      case 'dlkey': withBank(function () { wordDownload(t, 'key'); }); break;
+      case 'bdlexam': withBank(function () { wordDownload(bankPseudoTest(), 'exam'); }); break;
+      case 'bdlkey': withBank(function () { wordDownload(bankPseudoTest(), 'key'); }); break;
       case 'printexam': withBank(function () { doPrint(examHtml(t), false); }); break;
       case 'printkey': withBank(function () { doPrint(keyHtml(t), false); }); break;
       case 'banklog': bankLogSave(t); break;

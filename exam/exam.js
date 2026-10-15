@@ -78,7 +78,7 @@
       }
       if (j.done) { lsSet({ code: code, submitted: true }); screenDone(j.late); return; }
       var items; try { items = JSON.parse(j.def).items; } catch (e) { screenLogin('تعذّر تحميل الأسئلة. حاول مرة أخرى.'); return; }
-      S = { code: code, title: j.title, n: j.n, items: items, order: makeOrder(j.n, j.shuffle, j.seed), ans: [], tm: [], cur: 0, deadline: j.deadline, offset: 0, dirty: false, saving: false, curStart: 0, submitting: false, last: '' };
+      S = { code: code, title: j.title, n: j.n, items: items, order: makeOrder(j.n, j.shuffle, j.seed), ans: [], tm: [], cur: 0, deadline: j.deadline, offset: 0, minSec: j.minSec || 0, lock: !!j.lock, dirty: false, saving: false, curStart: 0, submitting: false, last: '' };
       syncClock(j);
       var i, a = j.ans || '', t = (j.tm || '').split(',');
       for (i = 0; i < j.n; i++) { S.ans[i] = a.length === j.n ? +a.charAt(i) : 0; S.tm[i] = +t[i] || 0; }
@@ -98,12 +98,12 @@
   }
 
   function persist(full) {
-    var o = { code: S.code, ans: S.ans, tm: S.tm.map(function (v) { return Math.round(v); }), cur: S.cur, deadline: S.deadline, offset: S.offset, savedAt: Date.now(), submitted: false };
+    var o = { code: S.code, ans: S.ans, tm: S.tm.map(function (v) { return Math.round(v); }), cur: S.cur, deadline: S.deadline, offset: S.offset, savedAt: Date.now(), submitted: false, minSec: S.minSec, lock: S.lock };
     if (full) { o.items = S.items; o.title = S.title; o.n = S.n; o.order = S.order; } else { var old = lsGet(); if (old && old.items) { o.items = old.items; o.title = old.title; o.n = old.n; o.order = old.order; } else { o.items = S.items; o.title = S.title; o.n = S.n; o.order = S.order; } }
     lsSet(o);
   }
   function resumeLocal(loc) {
-    S = { code: loc.code, title: loc.title, n: loc.n, items: loc.items, order: loc.order, ans: loc.ans.slice(), tm: loc.tm.slice(), cur: loc.cur || 0, deadline: loc.deadline, offset: loc.offset || 0, dirty: true, saving: false, curStart: 0, submitting: false, last: '' };
+    S = { code: loc.code, title: loc.title, n: loc.n, items: loc.items, order: loc.order, ans: loc.ans.slice(), tm: loc.tm.slice(), cur: loc.cur || 0, deadline: loc.deadline, offset: loc.offset || 0, minSec: loc.minSec || 0, lock: !!loc.lock, dirty: true, saving: false, curStart: 0, submitting: false, last: '' };
     // الساعة المحلية قد تغيّرت منذ آخر اتصال؛ نحافظ على الفرق الذي قيس سابقًا
     startExam();
     setOffline(true);
@@ -118,7 +118,7 @@
     S.curStart = document.hidden ? 0 : Date.now();
     drawQ(); tick();
     clearInterval(timers.tick); timers.tick = setInterval(tick, 500);
-    clearInterval(timers.sync); timers.sync = setInterval(function () { if (S && S.dirty) sync(false); else if (S && offline) sync(false); }, 15000);
+    clearInterval(timers.sync); timers.sync = setInterval(function () { if (S && !S.finished) sync(false); }, 15000);
   }
   function fmt(ms) {
     var s = Math.max(0, Math.ceil(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
@@ -131,6 +131,7 @@
     if (el) { el.textContent = fmt(r); el.className = 'tmr' + (r <= 60000 ? ' w1' : r <= 300000 ? ' w5' : ''); }
     if (r <= 300000 && r > 0 && !warned[5]) { warned[5] = 1; toast('بقي 5 دقائق'); }
     if (r <= 60000 && r > 0 && !warned[1]) { warned[1] = 1; toast('بقيت دقيقة واحدة'); }
+    if (document.getElementById('lk')) applyLock();
     if (r <= 0 && !S.submitting) { S.submitting = true; toast('انتهى الزمن، يجري تسليم إجاباتك'); submit(true); }
   }
   function flushTm() {
@@ -153,13 +154,24 @@
     sv.textContent = v ? 'لا اتصال — إجاباتك محفوظة على جهازك وستُرسَل تلقائيًا' : (S && S.dirty ? 'جارٍ الحفظ…' : 'محفوظ ✓');
   }
 
+  /* الحد الأدنى لزمن الفقرة: لا يُقبل ظلال الإجابة قبل مرور minSec ثانية من الوقت الفعلي على الفقرة */
+  function lockLeft() {
+    if (!S || !S.lock || !S.minSec) return 0;
+    var idx = S.order[S.cur], el = S.curStart ? (Date.now() - S.curStart) / 1000 : 0;
+    return Math.max(0, Math.ceil(S.minSec - ((S.tm[idx] || 0) + el)));
+  }
+  function applyLock() {
+    var n = lockLeft(), box = document.getElementById('lk');
+    document.querySelectorAll('.opt').forEach(function (b) { b.disabled = n > 0; b.setAttribute('aria-disabled', n > 0 ? 'true' : 'false'); if (n > 0) b.style.opacity = '.6'; else b.style.opacity = ''; });
+    if (box) box.textContent = n > 0 ? 'اقرأ السؤال جيدًا: يمكنك الإجابة بعد ' + n + ' ثوانٍ' : '';
+  }
   function drawQ() {
     var i = S.order[S.cur], it = S.items[i], a = S.ans[i], n = S.n;
     var h = '<div class="qn">السؤال ' + (S.cur + 1) + ' من ' + n + '</div><div class="qt">' + rich(it.q) + '</div>';
     it.op.forEach(function (o, k) {
       h += '<button class="opt" data-o="' + (k + 1) + '" aria-pressed="' + (a === k + 1) + '"><span class="lt" aria-hidden="true">' + LET[k + 1] + '</span><span>' + rich(o) + '</span></button>';
     });
-    h += '<div style="margin-top:4px"><button class="clr" data-clr="1"' + (a ? '' : ' disabled') + '>مسح إجابتي لهذا السؤال</button></div>';
+    h += '<div id="lk" class="hint" aria-live="polite" style="min-height:22px"></div><div style="margin-top:4px"><button class="clr" data-clr="1"' + (a ? '' : ' disabled') + '>مسح إجابتي لهذا السؤال</button></div>';
     var done = 0; S.order.forEach(function (ix, p) { if (S.ans[ix]) done++; });
     h += '<details class="card"><summary>كل الأسئلة (أجبتَ عن ' + done + ' من ' + n + ')</summary><div class="grid">';
     for (var p = 0; p < n; p++) h += '<button class="nv' + (S.ans[S.order[p]] ? ' done' : '') + (p === S.cur ? ' cur' : '') + '" data-go="' + p + '" aria-label="السؤال ' + (p + 1) + (S.ans[S.order[p]] ? '، تمت الإجابة' : '') + '">' + (p + 1) + '</button>';
@@ -170,10 +182,12 @@
       (last ? '<button class="btn" data-review="1">مراجعة وتسليم</button>' : '<button class="btn" data-nav="1">التالي</button>');
     if (!last) { /* زر مراجعة ثانوي داخل القائمة السفلية غير لازم: القائمة أعلاه تتيح التنقل */ }
     document.getElementById('acts').style.display = '';
+    applyLock();
     window.scrollTo(0, 0);
   }
 
   function setAns(k) {
+    if (lockLeft() > 0) return;
     var i = S.order[S.cur]; flushTm();
     S.ans[i] = S.ans[i] === k ? 0 : k; S.dirty = true; persist(false);
     setOffline(offline); drawQ(); window.scrollTo(0, window.scrollY);

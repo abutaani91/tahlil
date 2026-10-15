@@ -24,7 +24,7 @@ function setup() {
     id = ss.getId();
   }
   var ss2 = SpreadsheetApp.openById(id);
-  sheet_(ss2, 'exams', ['id', 'title', 'minutes', 'n', 'status', 'created', 'shuffle', 'chunks']);
+  sheet_(ss2, 'exams', ['id', 'title', 'minutes', 'n', 'status', 'created', 'shuffle', 'chunks', 'minSec', 'lock']);
   sheet_(ss2, 'defs', ['id', 'idx', 'chunk']);
   return ss2.getUrl();
 }
@@ -52,8 +52,8 @@ function now_() {
   return (typeof __NOW !== 'undefined' && __NOW) ? __NOW() : Date.now();
 }
 
-var TEACHER = { ping: 1, publish: 1, status: 1, results: 1, setstatus: 1, reset: 1, remove: 1 };
-var WRITES = { publish: 1, setstatus: 1, reset: 1, remove: 1, start: 1, save: 1, submit: 1 };
+var TEACHER = { ping: 1, publish: 1, status: 1, results: 1, setstatus: 1, reset: 1, remove: 1, extend: 1, endnow: 1 };
+var WRITES = { publish: 1, setstatus: 1, reset: 1, remove: 1, extend: 1, endnow: 1, start: 1, save: 1, submit: 1 };
 
 function route_(q) {
   var a = String(q.a || '');
@@ -77,6 +77,8 @@ function route_(q) {
       case 'setstatus': return setstatus_(q);
       case 'reset': return reset_(q);
       case 'remove': return remove_(q);
+      case 'extend': return extend_(q);
+      case 'endnow': return endnow_(q);
       case 'start': return start_(q);
       case 'save': return save_(q, false);
       case 'submit': return save_(q, true);
@@ -102,10 +104,10 @@ function examRow_(ss, id) {
   var sh = ss.getSheetByName('exams');
   var n = sh.getLastRow();
   if (n < 2) return null;
-  var v = sh.getRange(2, 1, n - 1, 8).getValues();
+  var v = sh.getRange(2, 1, n - 1, 10).getValues();
   for (var i = 0; i < v.length; i++) {
     if (String(v[i][0]) === id) {
-      return { row: i + 2, id: id, title: String(v[i][1]), minutes: Number(v[i][2]), n: Number(v[i][3]), status: String(v[i][4]), created: Number(v[i][5]), shuffle: Number(v[i][6]) === 1, chunks: Number(v[i][7]), sh: sh };
+      return { row: i + 2, id: id, title: String(v[i][1]), minutes: Number(v[i][2]), n: Number(v[i][3]), status: String(v[i][4]), created: Number(v[i][5]), shuffle: Number(v[i][6]) === 1, chunks: Number(v[i][7]), minSec: Number(v[i][8]) || 0, lock: Number(v[i][9]) === 1, sh: sh };
     }
   }
   return null;
@@ -175,7 +177,8 @@ function publish_(q) {
   cs.appendRow(['code', 'no', 'startedAt', 'deadline', 'submittedAt', 'ans', 'tm', 'lastSave']);
   var cr = codes.map(function (x) { return ['c' + x.code, Number(x.no) || 0, '', '', '', '', '', '']; });
   cs.getRange(2, 1, cr.length, 8).setValues(cr);
-  ss.getSheetByName('exams').appendRow([id, title, minutes, def.items.length, 'open', now_(), q.shuffle ? 1 : 0, chunks]);
+  var minSec = Math.round(Number(q.minSec)); if (!(minSec >= 0 && minSec <= 60)) minSec = 0;
+  ss.getSheetByName('exams').appendRow([id, title, minutes, def.items.length, 'open', now_(), q.shuffle ? 1 : 0, chunks, minSec, q.lock && minSec > 0 ? 1 : 0]);
   return { ok: true, id: id, students: cr.length, chunks: chunks };
 }
 
@@ -187,9 +190,11 @@ function status_(q) {
     var st = v[i][4] !== '' ? 'done' : v[i][2] !== '' ? (t > Number(v[i][3]) + GRACE_MS ? 'over' : 'run') : 'new';
     var ans = String(v[i][5] || '').slice(1), k = 0;
     for (var j = 0; j < ans.length; j++) if (ans.charAt(j) !== '0') k++;
-    list.push({ no: Number(v[i][1]), st: st, k: k, last: v[i][7] === '' ? 0 : Number(v[i][7]) });
+    var tms = String(v[i][6] || '').slice(1).split(','), fast = 0;
+    if (ex.minSec > 0) for (var f = 0; f < ans.length; f++) if (ans.charAt(f) !== '0' && tms[f] !== undefined && tms[f] !== '' && Number(tms[f]) < ex.minSec) fast++;
+    list.push({ no: Number(v[i][1]), st: st, k: k, fast: fast, dl: v[i][3] === '' ? 0 : Number(v[i][3]), last: v[i][7] === '' ? 0 : Number(v[i][7]) });
   }
-  return { ok: true, status: ex.status, title: ex.title, minutes: ex.minutes, n: ex.n, now: t, list: list };
+  return { ok: true, status: ex.status, title: ex.title, minutes: ex.minutes, n: ex.n, minSec: ex.minSec, lock: ex.lock, now: t, list: list };
 }
 
 function results_(q) {
@@ -211,6 +216,38 @@ function setstatus_(q) {
   var s = q.status === 'closed' ? 'closed' : 'open';
   ex.sh.getRange(ex.row, 5).setValue(s);
   return { ok: true, status: s };
+}
+
+/* تمديد الوقت: mins دقائق (1–240). بلا no: للجميع (ويُضاف إلى زمن من لم يبدأ). مع no: لطالب واحد. */
+function extend_(q) {
+  var ss = ss_(), ex = examRow_(ss, String(q.id || ''));
+  if (!ex) return { ok: false, e: 'none' };
+  var mins = Math.round(Number(q.mins));
+  if (!(mins >= 1 && mins <= 240)) return { ok: false, e: 'minutes' };
+  var sh = codesSheet_(ss, ex.id), v = readCodes_(sh), t = now_(), k = 0, all = q.no === undefined || q.no === null;
+  for (var i = 0; i < v.length; i++) {
+    if (v[i][2] === '' || v[i][4] !== '') continue;
+    if (!all && Number(v[i][1]) !== Number(q.no)) continue;
+    var dl = Number(v[i][3]);
+    if (all && t > dl + GRACE_MS) continue;
+    sh.getRange(i + 2, 4).setValue(Math.max(dl, t) + mins * 60000);
+    k++;
+  }
+  if (all) ex.sh.getRange(ex.row, 3).setValue(Math.min(600, ex.minutes + mins));
+  return { ok: true, changed: k, minutes: all ? Math.min(600, ex.minutes + mins) : ex.minutes };
+}
+
+/* إنهاء الاختبار الآن: يُغلق الدخول ويُنهي وقت كل من بدأ ولم يسلّم (يُسلَّم تلقائيًا من جهازه) */
+function endnow_(q) {
+  var ss = ss_(), ex = examRow_(ss, String(q.id || ''));
+  if (!ex) return { ok: false, e: 'none' };
+  var sh = codesSheet_(ss, ex.id), v = readCodes_(sh), t = now_(), k = 0;
+  for (var i = 0; i < v.length; i++) {
+    if (v[i][2] === '' || v[i][4] !== '') continue;
+    if (Number(v[i][3]) > t) { sh.getRange(i + 2, 4).setValue(t); k++; }
+  }
+  ex.sh.getRange(ex.row, 5).setValue('closed');
+  return { ok: true, changed: k };
 }
 
 function reset_(q) {
@@ -272,7 +309,7 @@ function start_(q) {
   }
   return {
     ok: true, done: false, title: ex.title, n: ex.n, minutes: ex.minutes, shuffle: ex.shuffle,
-    deadline: Number(r[3]), now: t, seed: Number(r[1]) || 1,
+    deadline: Number(r[3]), now: t, seed: Number(r[1]) || 1, minSec: ex.minSec, lock: ex.lock,
     ans: String(r[5] || '').slice(1), tm: String(r[6] || '').slice(1),
     def: defOf_(ss, ex)
   };
