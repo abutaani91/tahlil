@@ -1,7 +1,7 @@
 /* app.js — واجهة «تحليل». بيانات المعلم كلها في localStorage على جهازه، ولا شيء يُرسَل إلى أي خادم. */
 (function () {
   'use strict';
-  var APP_VERSION = 5;
+  var APP_VERSION = 6;
   var KEY = 'tahlil.db.v1';
   var LET = ['—', 'أ', 'ب', 'ج', 'د'];
   var esc = Sheet.esc;
@@ -215,6 +215,7 @@
     if (el.dataset.act === 'restore') { restoreFile(el.files[0]); el.value = ''; return; }
     if (el.dataset.bk) { bankChange(el); return; }
     if (el.dataset.o) { onlineChange(el); return; }
+    if (el.dataset.hd) { hdrChange(el); return; }
     if (!cur) return;
     var t = cur, f = el.dataset.f;
     if (f === 'title' || f === 'subject' || f === 'cls') { t[f] = el.value; save(); if (f === 'title') $('.top h1').textContent = el.value || 'اختبار'; }
@@ -576,7 +577,7 @@
   var sheetOpt = { mode: 'blank', copies: 1 };
   function viewSheet(m) {
     var t = cur, g = Sheet.geom(t.n), hasS = t.students.length > 0;
-    var examCard = t.bank ? '<div class="card"><h2>ورقة الأسئلة (من البنك)</h2><p class="hint">تُطبع أسئلة الاختبار ' + t.n + ' فقرة بخيارات أ ب ج د، والطالب يظلّل إجابته في ورقة الإجابة أدناه.</p><div class="btns"><button class="btn" data-act="dlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="dlkey">تنزيل المفتاح والمواصفات (Word)</button></div><div class="btns"><button class="btn alt sm" data-act="printexam">طباعة مباشرة</button><button class="btn alt sm" data-act="printkey">طباعة المفتاح مباشرة</button></div></div>' : '';
+    var examCard = t.bank ? hdrCard(t) + '<div class="card"><h2>ورقة الأسئلة (من البنك)</h2><p class="hint">تُطبع أسئلة الاختبار ' + t.n + ' فقرة بخيارات أ ب ج د، والطالب يظلّل إجابته في ورقة الإجابة أدناه.</p><div class="btns"><button class="btn" data-act="dlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="dlkey">تنزيل المفتاح والمواصفات (Word)</button></div><div class="btns"><button class="btn alt sm" data-act="printexam">طباعة مباشرة</button><button class="btn alt sm" data-act="printkey">طباعة المفتاح مباشرة</button></div></div>' : '';
     m.innerHTML = examCard + '<div class="card"><h2>طباعة ورقة الإجابة</h2><p class="hint">' + t.n + ' فقرة في ' + g.cols + ' أعمدة. اطبعها بحجم A4 بنسبة 100% (بلا «ملاءمة الصفحة») وعلى ورقة بيضاء. الورقة المطبوعة لكل طالب يأتي رقمه مظلَّلًا مسبقًا فلا يخطئ في تظليله.</p>' +
       '<div class="chips"><button class="chip" data-act="smode" data-m="blank" aria-pressed="' + (sheetOpt.mode === 'blank') + '">نسخ فارغة</button><button class="chip" data-act="smode" data-m="stu" aria-pressed="' + (sheetOpt.mode === 'stu') + '"' + (hasS ? '' : ' disabled') + '>ورقة لكل طالب (' + t.students.length + ')</button></div>' +
       (sheetOpt.mode === 'blank' ? '<div style="max-width:200px;margin-top:10px"><label for="cp">عدد النسخ</label><input id="cp" type="number" min="1" max="200" value="' + sheetOpt.copies + '"></div>' : '') +
@@ -695,7 +696,7 @@
     }
     if (b.drawn && b.drawn.length) {
       var d = b.drawn, kd = Bank.keyDist(d), ld = Bank.lvlDist(d), lg = db.bankLog || {};
-      h += '<div class="card" id="bres"><h2>٣. الاختبار المسحوب (' + d.length + ' فقرة)</h2>' +
+      h += hdrCard(null) + '<div class="card" id="bres"><h2>٣. الاختبار المسحوب (' + d.length + ' فقرة)</h2>' +
         '<div class="kpis"><div class="kpi"><div class="v">' + ld['ت'] + ' / ' + ld['ط'] + ' / ' + ld['ح'] + '</div><div class="l">تذكّر / تطبيق / تحليل</div></div><div class="kpi"><div class="v">' + kd.join(' / ') + '</div><div class="l">توزّع المفتاح أ / ب / ج / د</div></div>' + timeKpiHtml(d) + '</div><p class="hint">أزمنة الفقرات تقديرية: قراءة الفقرة وبدائلها بسرعة طالب (150 كلمة في الدقيقة) + زمن تفكير بحسب المستوى + زمن حساب إن كثرت الأرقام. عدّلها يدويًا لكل فقرة، وستُعايَر لاحقًا من أزمنة طلبتك الفعلية.</p>' +
         '<div class="grid g3" style="margin-top:12px"><div><label for="bt">عنوان الاختبار</label><input id="bt" type="text" data-bk="title" value="' + esc(b.title || defaultTitle()) + '"></div><div><label for="btot">العلامة الكلية</label><input id="btot" type="number" inputmode="decimal" min="1" data-bk="total" value="' + (b.total || d.length) + '"></div><div><label for="bmin">زمن الاختبار (دقيقة)</label><input id="bmin" type="number" inputmode="numeric" min="1" data-bk="minutes" value="' + (b.minutes || recMinutes(d)) + '"></div></div>' +
         '<div class="btns"><button class="btn" data-act="bcreate">إنشاء الاختبار في «تحليل»</button><button class="btn" data-act="bdlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="bdlkey">تنزيل المفتاح والمواصفات (Word)</button><button class="btn alt" data-act="bredraw">سحبة أخرى</button><button class="btn alt" data-act="bprint">طباعة مباشرة</button><button class="btn alt" data-act="bprintkey">طباعة المفتاح مباشرة</button></div>' +
@@ -1029,24 +1030,71 @@
   }
 
 
+
+  /* ---------- ترويسة ورقة الأسئلة (Word) على نموذج المعلم ---------- */
+  var HDR_DEF = { ministry: 'وزارة التربية والتعليم وتنمية الموارد البشرية', directorate: 'مديرية التربية والتعليم لواء الموقر', school: '', kind: 'تقويم الشهر الأول' };
+  var DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+  function isoToday() { var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+  function getHdr(t) {
+    var o = {}, k, a = db.set.hdr || {}, b = (t && t.hdr) || {};
+    for (k in HDR_DEF) o[k] = b[k] != null && b[k] !== '' ? b[k] : (a[k] != null && a[k] !== '' ? a[k] : HDR_DEF[k]);
+    if (!o.school) o.school = db.set.school || '';
+    o.schoolFull = o.school ? (/^\s*مدرسة/.test(o.school) ? o.school : 'مدرسة ' + o.school) : 'مدرسة ....................................';
+    var iso = (t && t.hdr && t.hdr.date) || ui.hdrDate || isoToday(), m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/), dt = m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : new Date();
+    o.dayName = DAYS[dt.getDay()]; o.dateText = ('0' + dt.getDate()).slice(-2) + '/' + ('0' + (dt.getMonth() + 1)).slice(-2) + '/' + dt.getFullYear(); o.iso = iso;
+    return o;
+  }
+  /* عدد الفقرات بالحروف: 20 ← «عشرين فقرة»، 5 ← «خمس فقرات» (حالة الجر بعد «من») */
+  function fqraWords(n) {
+    var T = { 1: 'واحدة', 2: 'اثنتين', 3: 'ثلاث', 4: 'أربع', 5: 'خمس', 6: 'ست', 7: 'سبع', 8: 'ثماني', 9: 'تسع', 10: 'عشر' };
+    var E = { 11: 'إحدى عشرة', 12: 'اثنتي عشرة', 13: 'ثلاث عشرة', 14: 'أربع عشرة', 15: 'خمس عشرة', 16: 'ست عشرة', 17: 'سبع عشرة', 18: 'ثماني عشرة', 19: 'تسع عشرة' };
+    var D = { 2: 'عشرين', 3: 'ثلاثين', 4: 'أربعين', 5: 'خمسين', 6: 'ستين', 7: 'سبعين', 8: 'ثمانين', 9: 'تسعين' };
+    var UF = { 1: 'إحدى', 2: 'اثنتين', 3: 'ثلاث', 4: 'أربع', 5: 'خمس', 6: 'ست', 7: 'سبع', 8: 'ثماني', 9: 'تسع' };
+    n = Math.max(1, Math.min(100, n | 0));
+    if (n === 1) return 'فقرة واحدة'; if (n === 2) return 'فقرتين';
+    if (n <= 10) return T[n] + ' فقرات';
+    if (n === 100) return 'مئة فقرة';
+    if (n <= 19) return E[n] + ' فقرة';
+    var t10 = Math.floor(n / 10), u = n % 10;
+    return (u ? UF[u] + ' و' : '') + D[t10] + ' فقرة';
+  }
+  function hdrCard(t) {
+    var H = getHdr(t), inp = function (id, lab, k, val, extra) { return '<div><label for="' + id + '">' + lab + '</label><input id="' + id + '" type="' + ((extra && extra.type) || 'text') + '" data-hd="' + k + '" value="' + esc(val) + '"' + ((extra && extra.list) ? ' list="' + extra.list + '"' : '') + '></div>'; };
+    return '<div class="card"><h2>ترويسة ورقة الأسئلة (Word)</h2><p class="hint">تظهر في ملف Word على نموذج ترويسة المدرسة. تُحفظ للاختبارات القادمة ما عدا التاريخ.</p><div class="grid g2">' +
+      inp('hd-min', 'الوزارة', 'ministry', H.ministry) + inp('hd-dir', 'المديرية', 'directorate', H.directorate) + inp('hd-sch', 'المدرسة', 'school', H.school || '') +
+      inp('hd-kind', 'نوع التقويم', 'kind', H.kind, { list: 'hd-kinds' }) + inp('hd-date', 'تاريخ الاختبار (اليوم يُحسب تلقائيًا: ' + H.dayName + ')', 'date', H.iso, { type: 'date' }) +
+      '</div><datalist id="hd-kinds"><option value="تقويم الشهر الأول"><option value="تقويم الشهر الثاني"><option value="اختبار نهاية الفصل الأول"><option value="اختبار نهاية الفصل الثاني"><option value="اختبار قصير"><option value="اختبار الوحدة"></datalist></div>';
+  }
+  function hdrChange(el) {
+    var k = el.dataset.hd; db.set.hdr = db.set.hdr || {};
+    if (k === 'date') { if (cur && cur.bank) { cur.hdr = cur.hdr || {}; cur.hdr.date = el.value; } else ui.hdrDate = el.value; save(); var lab = el.previousElementSibling; if (lab) lab.textContent = 'تاريخ الاختبار (اليوم يُحسب تلقائيًا: ' + getHdr(cur).dayName + ')'; return; }
+    db.set.hdr[k] = el.value; if (cur && cur.bank) { cur.hdr = cur.hdr || {}; cur.hdr[k] = el.value; } save();
+  }
+
   /* ---------- تصدير Word (.docx) ---------- */
   function wordDownload(t, kind) {
     try {
-      var items = t.bank.ids.map(function (id) { return BX.byId[id]; }).filter(Boolean), n = items.length, d = Docx.doc({ footer: t.title });
+      var items = t.bank.ids.map(function (id) { return BX.byId[id]; }).filter(Boolean), n = items.length, d = kind === 'exam' ? Docx.doc({ pageNo: false, pageBorder: true, margins: { top: 720, right: 720, bottom: 720, left: 709 } }) : Docx.doc({ footer: t.title });
       var sub = [t.subject, t.cls].filter(Boolean).join(' · ');
       if (kind === 'exam') {
-        d.table([[{ t: db.set.school || '', size: 11 }, { t: db.set.teacher ? 'المعلم: ' + db.set.teacher : '', size: 11, align: 'center' }]], { borders: false, widths: [4819, 4819] });
-        d.p(t.title, { align: 'center', bold: true, size: 17, after: 40 });
-        d.p(sub + ' · ' + n + ' فقرة · العلامة الكلية ' + t.total + (t.minutes ? ' · الزمن ' + t.minutes + ' دقيقة' : ''), { align: 'center', color: '333333', size: 10.5 });
-        d.p('الاسم: ................................................     الشعبة: ..........     التاريخ: ..../..../........', { before: 120, after: 100, border: true, size: 11 });
-        d.p('اقرأ كل فقرة جيدًا ثم ظلّل الدائرة التي تدل على الإجابة الصحيحة في ورقة الإجابة. لكل فقرة إجابة واحدة صحيحة.', { color: '444444', size: 10, after: 160 });
+        var H = getHdr(t), le = d.image(EXAM_LOGOS.emblem), li = d.image(EXAM_LOGOS.iso), L = 10477, grade = String(t.cls || '').replace(/^الصف\s*/, '');
+        d.p(H.ministry, { align: 'center', bold: true, size: 12, after: 0, rawRuns: d.anchor(le, 311150, 425450, 6455410, -106680, 2) + d.anchor(li, 430530, 358775, -142240, -106680, 3) });
+        d.table([[{ t: H.directorate, bold: true, size: 12 }, { t: H.schoolFull, bold: true, size: 12, align: 'end' }]], { borders: false, widths: [4500, 5400], indent: 538 });
+        d.p(H.kind + ' لمادة (' + (t.subject || '') + ') للصف (' + grade + ')', { align: 'center', bold: true, size: 12, after: 60 });
+        d.table([[{ t: 'الاسم: ..........................................', bold: true, size: 12 }, { t: H.dayName + ': ' + H.dateText, bold: true, size: 12, align: 'center' }, { t: 'الزمن: ' + (t.minutes ? t.minutes + ' دقيقة' : '.............'), bold: true, size: 12, align: 'end' }]], { borders: false, widths: [4500, 3500, 2477] });
+        d.p('* ملاحظة 1 : عزيزي الطالب لديك سؤال يتألف من ' + fqraWords(n) + '، يرجى قراءة الفقرات بتمعن ومن ثم الإجابة عليها جميعها في نموذج الإجابة المرفق', { size: 12, bTop: true, after: 0 });
+        d.p('* ملاحظة 2 : يتم التعامل مع حالات الغش المضبوط حسب المادة السادسة الفقرة (ي) من تعليمات الانضباط المدرسية لسنة 2017', { size: 12, bBottom: true, after: 120 });
+        var LB = ['أ- ', 'ب- ', 'جـ- ', 'د- '];
         items.forEach(function (it, i) {
-          d.p('<b>' + (i + 1) + '.</b> ' + it.q, { keepNext: true, size: 12, after: 50 });
-          var short = it.op.every(function (o) { return Bank.plain(o).length <= 26; }), c = it.op.map(function (o, k) { return { t: LETS[k] + ') ' + o, size: 11.5 }; });
-          if (short) d.table([c], { borders: false });
-          else d.table([[c[0], c[1]], [c[2], c[3]]], { borders: false, widths: [4819, 4819] });
+          d.p((i + 1) + '. ' + it.q, { keepNext: true, size: 12, after: 0, line: 360 });
+          var short = it.op.every(function (o) { return Bank.plain(o).length <= 26; }), c = it.op.map(function (o, k) { return { t: LB[k] + o, size: 12 }; });
+          if (short) d.table([c], { borders: false, indent: 567, widths: [2475, 2475, 2475, 2475], line: 360 });
+          else d.table([[c[0], c[1]], [c[2], c[3]]], { borders: false, indent: 567, widths: [4950, 4950], line: 360 });
         });
-        d.p('— انتهت الأسئلة —', { align: 'center', color: '444444', before: 120 });
+        d.p('"لا ينال العلم براحة الجسم"', { align: 'center', size: 14, before: 200, after: 0, line: 360 });
+        d.p('أطيب الأمنيات لكم بالتوفق', { align: 'center', size: 14, after: 0, line: 360 });
+        d.p('مدرس المادة', { align: 'center', size: 12, after: 0, line: 360 });
+        if (db.set.teacher) d.p(db.set.teacher, { align: 'center', size: 14, after: 0 });
       } else {
         d.p('مفتاح الإجابة وجدول المواصفات', { align: 'center', bold: true, size: 17, after: 40 });
         d.p([db.set.school, t.title, sub].filter(Boolean).join(' · '), { align: 'center', color: '333333', size: 10.5 });
