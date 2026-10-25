@@ -296,6 +296,15 @@
     });
     var idNo = idRows.every(function (r2) { return r2.digit !== null; }) ? idRows[0].digit * 100 + idRows[1].digit * 10 + idRows[2].digit : null;
 
+    /* النموذج: صف واحد (يُرسم فقط حين تكون الورقة لاختبار متعدد النماذج). idx: 0..k-1، -1 بلا تظليل، -2 تظليلان أو أكثر */
+    var formIdx;
+    if (g.form) {
+      var o3 = refineRow(wp, g.form.xs, g.form.y, g.form.r, 0.8, 1.1, DX, DY);
+      var fd = g.form.xs.map(function (x) { return darkness(wp, x + DX + o3.dx, g.form.y + DY + o3.dy, g.form.r); });
+      var fm = []; fd.forEach(function (v, k) { if (v >= thr) fm.push(k); });
+      formIdx = fm.length === 1 ? fm[0] : (fm.length ? -2 : -1);
+    }
+
     /* وضوح الصورة: متوسط تدرّج الحواف في منطقة الفقاعات */
     var sharp = 0, cnt = 0;
     for (var y = (g.areaTop * S) | 0; y < (g.areaBottom * S) | 0; y += 3) for (var x = 40; x < wp.w - 40; x += 3) {
@@ -303,7 +312,7 @@
     }
     sharp = sharp / Math.max(1, cnt);
 
-    return { ok: true, items: items, answers: answers, flagged: flagged, blank: blank, id: idNo, idRows: idRows,
+    return { ok: true, items: items, answers: answers, flagged: flagged, blank: blank, id: idNo, idRows: idRows, form: formIdx,
              thr: thr, sep: ot.sep, sharp: sharp, align: align, alignMin: alignMin, maxOff: maxOff, warped: wp, geom: g };
   }
 

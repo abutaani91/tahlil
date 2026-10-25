@@ -2,13 +2,14 @@
 (function (root) {
   'use strict';
 
-  var LET = ['أ', 'ب', 'ج', 'د'];
+  var LET = ['أ', 'ب', 'ج', 'د'], FLET = ['أ', 'ب', 'ج', 'د', 'هـ', 'و', 'ز', 'ح'];
 
   /* مراكز مربعات الزوايا بالملّيمتر: TL TR BR(الحلقة) BL */
   var MARKERS = { TL: [13, 13], TR: [197, 13], BR: [197, 284], BL: [13, 284] };
 
-  function geom(n) {
-    n = Math.max(1, Math.min(100, n | 0));
+  /* k = عدد النماذج (2..8): يُضاف صف «النموذج» فقط حين k > 1، فتبقى الأوراق القديمة بلا نموذج مطابقة للهندسة السابقة */
+  function geom(n, nforms) {
+    n = Math.max(1, Math.min(100, n | 0)); nforms = (nforms | 0) > 1 ? Math.min(8, nforms | 0) : 1;
     var cols = Math.max(2, Math.ceil(n / 25)), rows = Math.ceil(n / cols);
     var x0 = 14, x1 = 196, y0 = 64, y1 = 273;
     var colW = (x1 - x0) / cols, rp = Math.min(10.5, (y1 - y0) / rows);
@@ -22,8 +23,10 @@
     }
     var id = { r: 2.3, xs: [], ys: [31, 38, 45] };
     for (var k = 0; k < 10; k++) id.xs.push(24 + k * 6.2);
+    var form = null;
+    if (nforms > 1) { form = { k: nforms, y: 46.6, r: 2.3, xs: [] }; for (var j = 0; j < nforms; j++) form.xs.push(169 - j * 7.4); }
     return { page: [210, 297], markers: MARKERS, cols: cols, rows: rows, colW: colW, rowPitch: rp,
-             optPitch: pitch, bubbleD: d, items: items, id: id, areaTop: y0, areaBottom: y1, n: n };
+             optPitch: pitch, bubbleD: d, items: items, id: id, form: form, areaTop: y0, areaBottom: y1, n: n };
   }
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
@@ -40,6 +43,13 @@
         if (!filled) s += '<text x="' + x + '" y="' + y + '" font-size="2.6" fill="#555" text-anchor="middle" dy=".35em">' + k + '</text>';
       });
     });
+    if (g.form) {
+      g.form.xs.forEach(function (x, j) {
+        var filled = stu && stu.form === j;
+        s += '<circle cx="' + x + '" cy="' + g.form.y + '" r="' + g.form.r + '" fill="' + (filled ? '#000' : 'none') + '" stroke="#1a1a1a" stroke-width=".35"/>';
+        if (!filled) s += '<text x="' + x + '" y="' + g.form.y + '" font-size="2.4" fill="#555" text-anchor="middle" dy=".35em">' + FLET[j] + '</text>';
+      });
+    }
     var rr = g.bubbleD / 2;
     for (var c = 0; c < g.cols; c++) {
       var xr = 196 - c * g.colW;
@@ -74,6 +84,7 @@
     ['المئات', 'العشرات', 'الآحاد'].forEach(function (t, i) {
       h += '<div class="t" style="right:112mm;width:16mm;text-align:right;font-size:8pt;top:' + (g.id.ys[i] - 1.9) + 'mm">' + t + '</div>';
     });
+    if (g.form) h += '<div class="t" style="right:20mm;width:15mm;text-align:right;font-size:8.5pt;font-weight:600;top:' + (g.form.y - 2) + 'mm">النموذج</div>';
     h += '<div class="t" style="left:22mm;right:22mm;top:51.6mm;text-align:center;font-size:8.5pt;color:#333">ظلّل الدائرة كاملة بقلم أسود أو رصاص غامق · لا تضع (✓) أو (✗) · عند التغيير امحُ تمامًا</div>';
     h += '<div class="t" style="left:22mm;right:22mm;top:282.6mm;text-align:center;font-size:7.5pt;color:#444">ورقة إجابة · ' + o.n + ' فقرة · لا تثنِ الورقة ولا تكتب قرب المربعات السوداء</div>';
     return h + '</section>';

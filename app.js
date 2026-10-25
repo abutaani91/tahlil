@@ -1,7 +1,7 @@
 /* app.js — واجهة «تحليل». بيانات المعلم كلها في localStorage على جهازه، ولا شيء يُرسَل إلى أي خادم. */
 (function () {
   'use strict';
-  var APP_VERSION = 6;
+  var APP_VERSION = 8;
   var KEY = 'tahlil.db.v1';
   var LET = ['—', 'أ', 'ب', 'ج', 'د'];
   var esc = Sheet.esc;
@@ -42,6 +42,7 @@
   function getTest(id) { for (var i = 0; i < db.tests.length; i++) if (db.tests[i].id === id) return db.tests[i]; return null; }
   function resize(t, n) {
     n = Math.max(1, Math.min(100, n | 0));
+    if (t.forms && n !== t.n) { t.forms = null; t.students.forEach(function (s) { delete s.raw; delete s.form; }); }
     var key = zeros(n); for (var i = 0; i < Math.min(n, t.key.length); i++) key[i] = t.key[i];
     t.students.forEach(function (s) {
       if (!s.ans) return;
@@ -56,6 +57,56 @@
   function nextNo(t) { var u = {}; t.students.forEach(function (s) { u[s.no] = 1; }); for (var i = 1; i < 1000; i++) if (!u[i]) return i; return 999; }
   function findStu(t, no) { for (var i = 0; i < t.students.length; i++) if (t.students[i].no === no) return t.students[i]; return null; }
   function sortStu(t) { t.students.sort(function (a, b) { return a.no - b.no; }); }
+
+  /* ---------- نماذج الاختبار الورقي (2/4/6/8) ----------
+     t.forms = {k, seed, so, ord, omap} (انظر forms.js). s.form نموذج الطالب، s.raw تظليله كما على ورقته، s.ans الأصل المحوَّل (يقرؤه التحليل). */
+  var FMAP = { 'أ': 0, 'ا': 0, 'إ': 0, 'ب': 1, 'ج': 2, 'د': 3, 'ه': 4, 'هـ': 4, 'و': 5, 'ز': 6, 'ح': 7, 'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5, 'G': 6, 'H': 7 };
+  function nf(t) { return t && t.forms && t.forms.k > 1 ? t.forms.k : 1; }
+  function fLet(f) { return Forms.letter(f); }
+  function planForm(t, s) {
+    var k = nf(t); if (k < 2) return 0;
+    var sorted = t.students.slice().sort(function (a, b) { return a.no - b.no; });
+    for (var i = 0; i < sorted.length; i++) if (sorted[i].no === s.no) return i % k;
+    return 0;
+  }
+  function stuForm(t, s) { if (nf(t) < 2 || s.src === 'online') return 0; return (s.form != null && s.form >= 0 && s.form < nf(t)) ? s.form : planForm(t, s); }
+  function rawOf(t, s) {
+    if (nf(t) < 2 || s.src === 'online') return s.ans || null;
+    if (s.raw && s.raw.length === t.n) return s.raw;
+    return s.ans ? Forms.toDisp(t.forms, stuForm(t, s), s.ans) : null;
+  }
+  function putAns(t, s, arr, form) {
+    if (nf(t) > 1) { s.form = form; s.raw = arr.slice(); s.ans = Forms.toOrig(t.forms, form, arr); }
+    else { s.ans = arr; delete s.raw; delete s.form; }
+  }
+  function formKeyOf(t, f) { return nf(t) > 1 ? Forms.dispKey(t.forms, f, t.key) : t.key; }
+  function formOpts(t, sel, blank) {
+    var h = blank ? '<option value=""' + (sel === '' ? ' selected' : '') + '>اختر النموذج…</option>' : '';
+    for (var f = 0; f < nf(t); f++) h += '<option value="' + f + '"' + (sel === f ? ' selected' : '') + '>' + fLet(f) + '</option>';
+    return h;
+  }
+  function extractForm(ident, k) {
+    var m = String(ident || '').match(/^(.*?)(?:^|\s+)(?:نموذج\s*)?(هـ|[أاإبجدهوزحA-Ha-h])$/);
+    if (!m) return { ident: ident, form: null };
+    var f = FMAP[m[2]]; if (f === undefined) f = FMAP[m[2].toUpperCase()];
+    if (f === undefined || f >= k) return { ident: ident, form: null, bad: true };
+    return { ident: m[1].trim(), form: f };
+  }
+  /* تنبيه إن كانت الإجابات أقرب لنموذج آخر، أو اقتراح النموذج حين لم يُحدَّد */
+  function formWarn(t, f, raw) {
+    if (nf(t) < 2 || !keyed(t)) return '';
+    if (f === '' || f === null || f === undefined) {
+      var best = -1, bp = 0; for (var g = 0; g < nf(t); g++) { var q = Forms.pctUnder(t.forms, g, t.key, raw); if (q > bp) { bp = q; best = g; } }
+      return best >= 0 && bp >= 0.45 ? '<div class="notice">أقرب نموذج لإجاباته: <b>' + fLet(best) + '</b> (' + Math.round(bp * 100) + '% صحيحة).</div>' : '';
+    }
+    var mm = Forms.mismatch(t.forms, f, t.key, raw);
+    return mm ? '<div class="notice bad">تنبيه: إجاباته تطابق مفتاح النموذج <b>' + fLet(mm.other) + '</b> (' + Math.round(mm.otherPct * 100) + '%) أكثر من النموذج <b>' + fLet(f) + '</b> (' + Math.round(mm.mine * 100) + '%). تأكد من النموذج قبل الحفظ.</div>' : '';
+  }
+  /* فقرات بترتيب النموذج f وبخياراته المخلوطة (أو الأصل إن كان f فارغًا) */
+  function formItems(t, items, f) {
+    if (f === null || f === undefined || nf(t) < 2) return items;
+    var F = t.forms; return F.ord[f].map(function (o, p) { var it = items[o]; return { q: it.q, op: F.omap[f][p].map(function (x) { return it.op[x]; }), lvl: it.lvl, fb: it.fb, a: it.a }; });
+  }
 
   /* «1-5, 9» ⇄ [0,1,2,3,4,8] */
   function parseRange(str, n) {
@@ -217,6 +268,7 @@
     if (el.dataset.o) { onlineChange(el); return; }
     if (el.dataset.hd) { hdrChange(el); return; }
     if (!cur) return;
+    if (el.id === 'qs' && nf(cur) > 1) { var sq = findStu(cur, parseInt(el.value, 10)), qf = $('#qf'); if (sq && qf) qf.value = planForm(cur, sq); return; }
     var t = cur, f = el.dataset.f;
     if (f === 'title' || f === 'subject' || f === 'cls') { t[f] = el.value; save(); if (f === 'title') $('.top h1').textContent = el.value || 'اختبار'; }
     else if (f === 'n') {
@@ -268,30 +320,38 @@
         '<label class="btn alt" style="display:inline-flex;align-items:center;margin:0">رفع صور (عدة صور)<input type="file" accept="image/*" multiple data-act="scanfile" hidden></label></div></div><div id="scans"></div>';
     } else if (md === 'paste') {
       h += '<div class="card"><h2>إدخال سريع لطالب</h2><div class="grid g2" style="grid-template-columns:1fr 2fr"><div><label for="qs">الطالب</label><select id="qs">' + stuOptions(t) + '</select></div>' +
-        '<div><label for="qa">إجاباته متتابعة (' + t.n + ' فقرة)</label><input id="qa" type="text" dir="auto" placeholder="أبجدأ..."></div></div><div class="btns"><button class="btn" data-act="quick">حفظ</button></div><div id="qmsg"></div></div>' +
+        '<div><label for="qa">إجاباته متتابعة (' + t.n + ' فقرة)</label><input id="qa" type="text" dir="auto" placeholder="أبجدأ..."></div>' + (nf(t) > 1 ? '<div><label for="qf">النموذج</label><select id="qf">' + formOpts(t, 0) + '</select></div>' : '') + '</div><div class="btns"><button class="btn" data-act="quick">حفظ</button></div><div id="qmsg"></div></div>' +
         '<div class="card"><h2>لصق جدول</h2><p class="hint">من إكسل: عمود للرقم أو الاسم ثم إجابات الفقرات في أعمدة (أو في خلية واحدة متتابعة). تُعرف الصفوف بالرقم أولًا ثم بالاسم، والغريب يُضاف طالبًا جديدًا.</p>' +
         '<textarea id="pastebox" dir="auto" placeholder="1&#9;أ ب ج د أ ...&#10;سارة علي&#9;أبجدأ..."></textarea><div class="btns"><button class="btn" data-act="pastego">استيراد المُلصَق</button>' +
         '<label class="btn alt" style="display:inline-flex;align-items:center;margin:0">استيراد ملف Excel أو CSV<input type="file" accept=".xlsx,.xls,.csv,.txt" data-act="impfile" hidden></label></div><div id="pmsg"></div></div>';
     } else {
       var key = t.key;
-      h += '<div class="card"><h2>جدول الإجابات</h2><p class="hint">اضغط الخلية لتغيير إجابة الطالب بالتتابع. الأخضر صحيح والأحمر خطأ (يحتاج مفتاحًا).</p><div class="mx" id="mx"><table><thead><tr><th class="nm">الطالب</th><th>غائب</th>' +
+      h += '<div class="card"><h2>جدول الإجابات</h2><p class="hint">اضغط الخلية لتغيير إجابة الطالب بالتتابع. الأخضر صحيح والأحمر خطأ (يحتاج مفتاحًا).</p><div class="mx" id="mx"><table><thead><tr><th class="nm">الطالب</th><th>غائب</th>' + (nf(t) > 1 ? '<th>النموذج</th>' : '') +
         key.map(function (k, i) { return '<th>' + (i + 1) + '</th>'; }).join('') + '</tr></thead><tbody>' + t.students.map(function (s) {
+          var sf = stuForm(t, s), sarr = rawOf(t, s), skey = (nf(t) > 1 && s.src !== 'online') ? formKeyOf(t, sf) : key;
           return '<tr class="' + (s.absent ? 'abs' : '') + '"><td class="nm" title="' + esc(s.name) + '">' + s.no + ' ' + esc(s.name) + '</td><td><input type="checkbox" data-act="absent" data-no="' + s.no + '"' + (s.absent ? ' checked' : '') + ' aria-label="غائب: ' + esc(s.name) + '" style="width:20px;height:20px"></td>' +
-            key.map(function (k, i) { return cellHtml(s, i, k); }).join('') + '</tr>'; }).join('') + '</tbody></table></div></div>';
+            (nf(t) > 1 ? (s.src === 'online' ? '<td>—</td>' : '<td><select class="fsel" data-act="sform" data-no="' + s.no + '" aria-label="نموذج ' + esc(s.name) + '">' + formOpts(t, sf) + '</select></td>') : '') +
+            key.map(function (k, i) { return cellHtml(s, i, skey[i], sarr); }).join('') + '</tr>'; }).join('') + '</tbody></table></div></div>';
     }
     m.innerHTML = h; updateEntryHead(); if (md === 'scan') drawScans();
   }
-  function cellHtml(s, i, k) {
-    var v = s.ans ? s.ans[i] : -1, cls = v < 0 ? '' : (k ? (v === k ? 'right' : 'wrong') : '');
+  function cellHtml(s, i, k, arr) {
+    var v = arr ? arr[i] : -1, cls = v < 0 ? '' : (k ? (v === k ? 'right' : 'wrong') : '');
     return '<td><button class="mc ' + cls + '" data-act="mcell" data-no="' + s.no + '" data-i="' + i + '" aria-label="' + esc(s.name) + '، الفقرة ' + (i + 1) + '">' + (v < 0 ? '·' : (v ? LET[v] : '—')) + '</button></td>';
   }
   var saveT;
   function saveSoon() { clearTimeout(saveT); saveT = setTimeout(save, 400); }
   function cycleCell(btn) {
     var s = findStu(cur, +btn.dataset.no), i = +btn.dataset.i; if (!s) return;
-    if (!s.ans) s.ans = zeros(cur.n);
-    s.ans[i] = (s.ans[i] + 1) % 5; s.src = s.src || 'manual';
-    var v = s.ans[i], k = cur.key[i];
+    var k = cur.key[i], v;
+    if (nf(cur) > 1 && s.src !== 'online') {
+      var f = stuForm(cur, s), raw = rawOf(cur, s) ? rawOf(cur, s).slice() : zeros(cur.n);
+      raw[i] = (raw[i] + 1) % 5; putAns(cur, s, raw, f); s.src = s.src || 'manual';
+      v = raw[i]; k = formKeyOf(cur, f)[i];
+    } else {
+      if (!s.ans) s.ans = zeros(cur.n);
+      s.ans[i] = (s.ans[i] + 1) % 5; s.src = s.src || 'manual'; v = s.ans[i];
+    }
     btn.textContent = v ? LET[v] : '—'; btn.className = 'mc ' + (k ? (v === k ? 'right' : 'wrong') : '');
     saveSoon(); updateEntryHead();
   }
@@ -320,11 +380,12 @@
     return null;
   }
   function importRows(rows) {
-    var t = cur, ok = 0, added = 0, skipped = [], over = 0;
+    var t = cur, ok = 0, added = 0, skipped = [], over = 0, noForm = 0;
     rows.forEach(function (cells) {
       if (!cells.some(function (c) { return String(c).trim(); })) return;
-      var r = rowToAns(cells, t.n);
+      var r = rowToAns(cells, t.n), xf = null;
       if (!r) { skipped.push(cells.slice(0, 2).join(' ').slice(0, 24) || '(صف فارغ)'); return; }
+      if (nf(t) > 1) { xf = extractForm(r.ident, nf(t)); if (xf.bad) { skipped.push(String(r.ident).slice(0, 24) + ' (نموذج غير موجود)'); return; } r.ident = xf.ident; }
       var id = r.ident.replace(/[٠-٩]/g, function (d) { return '٠١٢٣٤٥٦٧٨٩'.indexOf(d); }).trim(), s = null;
       if (/^\d{1,3}$/.test(id)) { s = findStu(t, +id); if (!s) { s = { no: +id, name: 'طالب ' + id, ans: null, absent: false }; t.students.push(s); added++; } }
       else if (id) {
@@ -335,10 +396,12 @@
         if (!s) { skipped.push('(بلا اسم)'); return; }
       }
       if (s.ans) over++;
-      s.ans = r.ans; s.absent = false; s.src = 'import'; ok++;
+      var fm = 0; if (nf(t) > 1) { if (xf.form !== null) fm = xf.form; else { fm = planForm(t, s); noForm++; } }
+      putAns(t, s, r.ans, fm); s.absent = false; s.src = 'import'; ok++;
     });
     sortStu(t); save();
     var msg = 'استُورد ' + ok + ' صفًا' + (added ? '، أُضيف ' + added + ' طالبًا جديدًا' : '') + (over ? '، واستُبدلت إجابات ' + over + ' طالبًا' : '') + '.';
+    if (noForm) msg += ' ' + noForm + ' صفًا بلا حرف نموذج فاعتُمد النموذج المقترح للطالب (اكتب حرف النموذج بعد الرقم، مثل «5 ب»).';
     if (skipped.length) msg += ' تعذّر فهم ' + skipped.length + ' صفًا (عدد الإجابات لا يساوي ' + t.n + ' أو حروف غير مفهومة): ' + skipped.slice(0, 5).join('، ') + (skipped.length > 5 ? '…' : '');
     return { ok: ok, msg: msg, bad: skipped.length };
   }
@@ -367,10 +430,11 @@
     var no = parseInt($('#qs').value, 10), s = findStu(cur, no), a = Stats.parseAnswers($('#qa').value), box = $('#qmsg');
     if (!s) { box.innerHTML = '<div class="notice bad">اختر الطالب أولًا.</div>'; return; }
     if (a.length !== cur.n) { box.innerHTML = '<div class="notice bad">عدد الإجابات ' + a.length + ' ولا يساوي عدد الفقرات ' + cur.n + '. الفراغ يُكتب «-».</div>'; return; }
-    s.ans = a; s.absent = false; s.src = 'manual'; save(); updateEntryHead();
-    box.innerHTML = '<div class="notice ok">حُفظت إجابات ' + esc(s.name) + '.</div>';
+    var qfo = nf(cur) > 1 ? parseInt($('#qf').value, 10) : 0; if (!(qfo >= 0)) qfo = 0;
+    putAns(cur, s, a, qfo); s.absent = false; s.src = 'manual'; save(); updateEntryHead();
+    box.innerHTML = '<div class="notice ok">حُفظت إجابات ' + esc(s.name) + (nf(cur) > 1 ? ' (النموذج ' + fLet(qfo) + ')' : '') + '.</div>' + formWarn(cur, qfo, a);
     var nxt = cur.students.filter(function (x) { return !x.ans; })[0];
-    $('#qs').innerHTML = stuOptions(cur, nxt ? nxt.no : null); $('#qa').value = ''; $('#qa').focus();
+    $('#qs').innerHTML = stuOptions(cur, nxt ? nxt.no : null); $('#qa').value = ''; if (nf(cur) > 1 && nxt) $('#qf').value = planForm(cur, nxt); $('#qa').focus();
   }
 
   /* ---------- المسح بالكاميرا ---------- */
@@ -393,7 +457,7 @@
   var scanBusy = false;
   function scanFiles(files) {
     if (!files || !files.length) return;
-    var geom = Sheet.geom(cur.n), testId = cur.id;
+    var geom = Sheet.geom(cur.n, nf(cur)), testId = cur.id;
     Array.prototype.forEach.call(files, function (f) { ui.scans.push({ id: uid(), name: f.name, file: f, state: 'wait', testId: testId }); });
     drawScans(); pump(geom);
   }
@@ -410,6 +474,7 @@
         else {
           c.state = 'done'; c.choice = {}; c.touched = {}; c.ov = toDom(OMR.overlay(res, 320)); c.crops = {};
           var t = getTest(c.testId);
+          c.form = (t && nf(t) > 1 && res.form >= 0) ? res.form : '';
           if (t && res.id && findStu(t, res.id)) c.stuNo = res.id; else if (res.id) c.stuNo = 'add:' + res.id; else c.stuNo = '';
         }
       }).catch(function () { c.state = 'fail'; c.res = { message: 'تعذّر فتح الصورة.' }; }).then(function () {
@@ -443,10 +508,12 @@
         '<p class="hint">قُرئ الرقم: <b class="num">' + (r.id !== null ? r.id : 'تعذّر') + '</b>' + (s ? ' — ' + esc(s.name) : '') + ' · الفقرات المقروءة: ' + r.items.filter(function (x) { return x.status === 'ok'; }).length + ' · للمراجعة: ' + r.items.filter(function (x) { return x.status === 'review'; }).length + ' · فارغة: ' + r.items.filter(function (x) { return x.status === 'blank'; }).length + '</p>' +
         warn.map(function (w) { return '<div class="notice">' + esc(w) + '</div>'; }).join('') +
         (blanks.length ? '<p class="hint">فقرات بلا تظليل (تُحتسب بلا إجابة): ' + blanks.join('، ') + '</p>' : '') +
+        (nf(cur) > 1 ? '<p class="hint">' + (r.form >= 0 ? 'قُرئ النموذج: <b>' + fLet(r.form) + '</b>' : r.form === -2 ? 'ظُلّل أكثر من نموذج' : 'لم يُظلَّل النموذج') + '</p>' : '') +
         '<label for="sel' + c.id + '">الطالب</label><select id="sel' + c.id + '" data-act="selstu" data-id="' + c.id + '">' + stuOptions(cur, typeof selVal === 'number' ? selVal : -1, r.id && !findStu(cur, r.id) ? r.id : null).replace('<option value="">', '<option value=""' + (selVal === '' ? ' selected' : '') + '>') + '</select>' +
+        (nf(cur) > 1 ? '<label for="fm' + c.id + '" style="margin-top:8px">النموذج</label><select id="fm' + c.id + '" data-act="selform" data-id="' + c.id + '">' + formOpts(cur, c.form, true) + '</select>' + formWarn(cur, c.form, r.items.map(function (it, i) { return itemFinal(c, i) || 0; })) : '') +
         '</div></div>' + (reviewHtml ? '<h3 style="margin-top:12px">فقرات تحتاج قرارك</h3>' + reviewHtml : '<div class="notice ok">لا فقرات للمراجعة.</div>') +
-        '<div class="btns"><button class="btn" data-act="scansave" data-id="' + c.id + '"' + (pend || selVal === '' ? ' disabled' : '') + '>' +
-        (pend ? 'راجع ' + pend + ' فقرة أولًا' : selVal === '' ? 'اختر الطالب' : (s && s.ans ? 'استبدال إجابات الطالب' : 'اعتماد وحفظ')) + '</button><button class="btn alt" data-act="scandrop" data-id="' + c.id + '">تجاهل</button></div></div>';
+        '<div class="btns"><button class="btn" data-act="scansave" data-id="' + c.id + '"' + (pend || selVal === '' || (nf(cur) > 1 && c.form === '') ? ' disabled' : '') + '>' +
+        (pend ? 'راجع ' + pend + ' فقرة أولًا' : selVal === '' ? 'اختر الطالب' : (nf(cur) > 1 && c.form === '') ? 'اختر النموذج' : (s && s.ans ? 'استبدال إجابات الطالب' : 'اعتماد وحفظ')) + '</button><button class="btn alt" data-act="scandrop" data-id="' + c.id + '">تجاهل</button></div></div>';
     }).join('');
     list.forEach(function (c) {
       if (c.state !== 'done') return;
@@ -468,7 +535,7 @@
       s = { no: no, name: nm.trim() || 'طالب ' + no, ans: null, absent: false }; cur.students.push(s); sortStu(cur);
     } else s = findStu(cur, v);
     if (!s) return;
-    s.ans = c.res.items.map(function (it, i) { return itemFinal(c, i) || 0; }); s.absent = false; s.src = 'scan';
+    putAns(cur, s, c.res.items.map(function (it, i) { return itemFinal(c, i) || 0; }), nf(cur) > 1 ? c.form : 0); s.absent = false; s.src = 'scan';
     save(); c.state = 'saved'; c.ov = null; c.crops = null; toast('حُفظت إجابات ' + s.name); updateEntryHead(); drawScans();
   }
 
@@ -492,6 +559,26 @@
     return o;
   }
   function analysisFor(t) { return Stats.analyze(t); }
+  /* مقارنة النماذج: عدد ومتوسط وانحراف لكل نموذج + تحليل تباين بعامل واحد (إن كفت الأعداد) */
+  function formsCompare(t, a) {
+    if (nf(t) < 2) return '';
+    var groups = {}, order = [];
+    a.rows.forEach(function (r) { var g = r.s.src === 'online' ? 'o' : stuForm(t, r.s); if (!groups[g]) { groups[g] = []; order.push(g); } groups[g].push(r.pct); });
+    order.sort(function (x, y) { return (x === 'o' ? 99 : x) - (y === 'o' ? 99 : y); });
+    var mean = function (v) { var s = 0; v.forEach(function (x) { s += x; }); return v.length ? s / v.length : null; };
+    var sd = function (v) { if (v.length < 2) return null; var m = mean(v), s = 0; v.forEach(function (x) { s += (x - m) * (x - m); }); return Math.sqrt(s / (v.length - 1)); };
+    var rows = order.map(function (g) { var v = groups[g]; return '<tr><td>' + (g === 'o' ? 'إلكتروني' : 'النموذج ' + fLet(g)) + '</td><td class="num">' + v.length + '</td><td class="num">' + pct(mean(v)) + '</td><td class="num">' + (sd(v) === null ? '—' : pct(sd(v))) + '</td></tr>'; }).join('');
+    var paper = order.filter(function (g) { return g !== 'o'; }).map(function (g) { return groups[g]; });
+    var an = paper.length >= 2 && paper.every(function (v) { return v.length >= 2; }) ? Forms.oneWay(paper) : null;
+    var txt;
+    if (!an) txt = 'لا يكفي عدد الطلبة (طالبان على الأقل في كل نموذج) لمقارنة المتوسطات.';
+    else {
+      var ps = an.p < 0.001 ? '< 0.001' : fmt(an.p, 3);
+      txt = 'تحليل التباين بعامل واحد: F(' + an.d1 + '، ' + an.d2 + ') = ' + fmt(an.F, 2) + '، p = ' + ps + '، η² = ' + fmt(an.eta2, 2) + '. ' +
+        (an.p >= 0.05 ? 'لا فرق دال إحصائيًا بين متوسطات النماذج، أي أن النماذج متكافئة عمليًا.' : 'يوجد فرق دال إحصائيًا بين المتوسطات. بما أن الفقرات نفسها في كل النماذج، فالفرق يعود غالبًا إلى اختلاف مستوى المجموعات (إن لم يكن التوزيع عشوائيًا) أو إلى أثر الترتيب، وليس بالضرورة إلى النموذج.');
+    }
+    return '<div class="card"><h2>مقارنة النماذج</h2><div class="tw"><table><thead><tr><th>النموذج</th><th>عدد الطلبة</th><th>المتوسط %</th><th>الانحراف المعياري %</th></tr></thead><tbody>' + rows + '</tbody></table></div><p class="hint">' + esc(txt) + ' تحليل الفقرات (P وD وr) يحسب على كل الطلبة معًا بعد تحويل الإجابات إلى الترتيب الأصلي.</p></div>';
+  }
   function viewAnalysis(m) {
     var t = cur, a = analysisFor(t);
     if (!a.ok) { m.innerHTML = '<div class="card empty"><h2>التحليل غير جاهز</h2><p>' + esc(a.reason) + '</p><div class="btns" style="justify-content:center"><button class="btn" data-act="tab" data-tab="setup">المفتاح والإعداد</button><button class="btn alt" data-act="tab" data-tab="entry">الإدخال</button></div></div>'; return; }
@@ -509,6 +596,7 @@
         K('الوسيط', fmt(a.median * p)) + K('أدنى / أعلى', fmt(a.min * p, 1) + ' / ' + fmt(a.max * p, 1)) + K('ثبات KR-20', fmt(a.kr)) + K('الخطأ المعياري SEM', a.sem === null ? '—' : fmt(a.sem * p)) + K('نسبة النجاح (50% فأكثر)', pct(a.pass)) +
         K('الالتواء', fmt(a.skew)) + K('التفلطح', fmt(a.kurt)) + K('فقرات جيدة (من ' + a.m + ')', a.counts.ok) + '</div></div>' +
         '<div class="card"><h2>توزيع الدرجات (عدد الفقرات الصحيحة)</h2><div class="hist">' + a.bins.map(function (b) { return '<div><span class="num">' + b.count + '</span><i style="height:' + Math.round(b.count / maxc * 95) + '%"></i><span class="num" style="color:var(--muted)">' + b.from + '–' + b.to + '</span></div>'; }).join('') + '</div></div>' +
+        formsCompare(t, a) +
         '<div class="card"><h2>قراءة النتائج</h2><ul>' + analysisTexts(a).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' +
         '<p class="hint">الحكم على الفقرة يعتمد معيارين معًا: معامل التمييز D (مجموعتا 27% العليا والدنيا) وارتباط الفقرة المصحَّح بباقي الاختبار r. مع صعوبة P وفعالية البدائل. هي مؤشرات مساعدة لا قرارات آلية.</p></div>';
     } else if (ui.atab === 'items') {
@@ -530,9 +618,9 @@
         return { an: an, fast: fs, rte: an ? (an - fs) / an : 1 };
       };
       var rows = a.rows.slice(); if (ui.sortRank) rows.sort(function (x, y) { return x.rank - y.rank || x.s.no - y.s.no; }); else rows.sort(function (x, y) { return x.s.no - y.s.no; });
-      h += '<div class="card"><h2>الطلبة</h2><div class="btns" style="margin:0 0 10px"><button class="chip" data-act="sortrank" aria-pressed="' + ui.sortRank + '">ترتيب حسب الدرجة</button></div><div class="tw"><table><thead><tr><th>الرقم</th><th class="l">الاسم</th><th>الصحيحة</th><th>العلامة / ' + fmt(a.total, 0) + '</th><th>%</th><th>الترتيب</th>' + (hasT ? '<th>سريعة (&lt;' + rmin + 'ث)</th><th>جهد الاستجابة</th>' : '') +
+      h += '<div class="card"><h2>الطلبة</h2><div class="btns" style="margin:0 0 10px"><button class="chip" data-act="sortrank" aria-pressed="' + ui.sortRank + '">ترتيب حسب الدرجة</button></div><div class="tw"><table><thead><tr><th>الرقم</th><th class="l">الاسم</th><th>الصحيحة</th><th>العلامة / ' + fmt(a.total, 0) + '</th><th>%</th><th>الترتيب</th>' + (nf(t) > 1 ? '<th>النموذج</th>' : '') + (hasT ? '<th>سريعة (&lt;' + rmin + 'ث)</th><th>جهد الاستجابة</th>' : '') +
         a.outs.map(function (o) { return '<th>' + esc(o.name) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function (r) {
-          return '<tr><td>' + r.s.no + '</td><td class="l">' + esc(r.s.name) + '</td><td class="num">' + r.tot + ' / ' + a.m + '</td><td class="num">' + fmt(r.mark) + '</td><td class="num">' + pct(r.pct) + '</td><td>' + r.rank + '</td>' + (hasT ? (function () { var q = rapid(r.s); return q ? '<td class="num">' + q.fast + ' من ' + q.an + '</td><td class="num">' + pct(q.rte) + (q.rte < 0.9 ? ' <span class="tag rev">راجع</span>' : '') + '</td>' : '<td>—</td><td>—</td>'; })() : '') +
+          return '<tr><td>' + r.s.no + '</td><td class="l">' + esc(r.s.name) + '</td><td class="num">' + r.tot + ' / ' + a.m + '</td><td class="num">' + fmt(r.mark) + '</td><td class="num">' + pct(r.pct) + '</td><td>' + r.rank + '</td>' + (nf(t) > 1 ? '<td>' + (r.s.src === 'online' ? 'إلكتروني' : fLet(stuForm(t, r.s))) + '</td>' : '') + (hasT ? (function () { var q = rapid(r.s); return q ? '<td class="num">' + q.fast + ' من ' + q.an + '</td><td class="num">' + pct(q.rte) + (q.rte < 0.9 ? ' <span class="tag rev">راجع</span>' : '') + '</td>' : '<td>—</td><td>—</td>'; })() : '') +
             r.out.map(function (v) { return '<td class="num">' + (v === null ? '—' : pct(v) + (v < 0.6 ? ' ▾' : '')) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div><p class="hint">▾ تعني دون حد الإتقان (60%).' + (hasT ? ' «سريعة» هي الفقرات المجابة في زمن أقل من ' + rmin + ' ثوانٍ، و«جهد الاستجابة» نسبة الفقرات التي أُجيبت بزمن كافٍ. ما دون 90% مؤشر يستحق المراجعة (تخمين أو نقل) وليس دليل غش بذاته؛ راجع الطالب ثم قرّر.' : '') + '</p></div>';
     } else {
       h += '<div class="card"><h2>النتاجات</h2>' + (a.outs.length ? '<div class="tw"><table><thead><tr><th class="l">النتاج</th><th>الفقرات</th><th>متوسط الإتقان</th><th>دون الإتقان</th></tr></thead><tbody>' + a.outs.map(function (o) {
@@ -575,23 +663,58 @@
 
   /* ---------- ورقة الإجابة ---------- */
   var sheetOpt = { mode: 'blank', copies: 1 };
+  function formsCard(t) {
+    var F = nf(t) > 1 ? t.forms : null, k = nf(t), locked = entered(t) > 0;
+    var h = '<div class="card"><h2>نماذج الاختبار</h2><p class="hint">لمنع النقل في القاعة: نماذج بترتيب أسئلة وخيارات مختلف (النموذج أ هو الترتيب الأصلي). يظلّل الطالب في ورقة الإجابة حرف نموذجه، وتُحوَّل إجاباته تلقائيًا إلى الترتيب الأصلي عند الإدخال والمسح، فيبقى تحليل الفقرات سليمًا. الاختبار الإلكتروني يخلط لكل طالب تلقائيًا ولا يحتاج نماذج.</p>';
+    h += '<div class="grid g2"><div><label for="fm-k">عدد النماذج</label><select id="fm-k"' + (locked ? ' disabled' : '') + '>' + [1, 2, 4, 6, 8].map(function (x) { return '<option value="' + x + '"' + (x === k ? ' selected' : '') + '>' + (x === 1 ? 'نموذج واحد (بلا نماذج)' : x + ' نماذج') + '</option>'; }).join('') + '</select></div>' +
+      '<div style="display:flex;align-items:flex-end"><label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" id="fm-so"' + (F ? (F.so ? ' checked' : '') : ' checked') + (locked ? ' disabled' : '') + ' style="width:20px;height:20px"> خلط ترتيب الخيارات أيضًا</label></div></div>';
+    h += '<div class="btns"><button class="btn" data-act="fmgen"' + (locked ? ' disabled' : '') + '>' + (F ? 'إعادة توزيع النماذج' : 'توليد النماذج') + '</button></div>';
+    if (locked) h += '<div class="notice">أُدخلت إجابات ' + entered(t) + ' طالبًا، فلا يمكن تغيير النماذج الآن. لتغييرها انسخ الاختبار من الشاشة الرئيسية (زر النسخ) ثم ولّد النماذج في النسخة قبل الإدخال.</div>';
+    h += '<div id="fmmsg" aria-live="polite"></div>';
+    if (F) {
+      var kd = ''; 
+      var rows = '';
+      for (var f = 0; f < k; f++) {
+        var dk = Forms.dispKey(F, f, t.key), plan = t.students.slice().sort(function (a, b) { return a.no - b.no; }).filter(function (s) { return planForm(t, s) === f; }).map(function (s) { return s.no; });
+        rows += '<tr><td><b>' + fLet(f) + '</b></td><td class="num" dir="rtl" style="white-space:normal;text-align:start">' + dk.map(function (v) { return v ? LET[v] : '·'; }).join(' ') + '</td><td class="num" style="white-space:normal">' + (plan.length ? esc(rangeStr(plan.map(function (x) { return x - 1; }))) : '—') + '</td><td><button class="btn alt sm" data-act="fmword" data-f="' + f + '">Word</button></td></tr>';
+      }
+      h += '<div class="tw" style="margin-top:10px"><table><thead><tr><th>النموذج</th><th>مفتاحه (بترتيب النموذج)</th><th>الطلبة المقترحون (بالتناوب حسب الرقم)</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<p class="hint">في وضع «ورقة لكل طالب» يأتي النموذج المقترح مظلَّلًا مسبقًا. وزّع ورقة الأسئلة على الطلبة بحسب الجدول (أو بالتناوب على المقاعد) وإن غيّرت فاترك الطالب يظلّل نموذجه الفعلي في ورقة الإجابة الفارغة. الفقرات التي في خياراتها «كل ما سبق» أو أعداد مرتّبة تبقى خياراتها في أماكنها.</p>' +
+        '<div class="btns"><button class="btn alt" data-act="fmword" data-f="all">كل النماذج (ملف Word واحد)</button></div>';
+    }
+    return h + '</div>';
+  }
+  function fmGenerate(t) {
+    var k = parseInt($('#fm-k').value, 10), so = $('#fm-so').checked;
+    if (entered(t) > 0) return;
+    if (k === 1) { t.forms = null; t.students.forEach(function (s) { delete s.raw; delete s.form; }); save(); render(); toast('أُلغيت النماذج'); return; }
+    withBank(function () {
+      var items = t.bank.ids.map(function (id) { return BX.byId[id]; });
+      if (items.some(function (x) { return !x; })) { toast('بعض فقرات الاختبار لم تعد في البنك الحالي.'); return; }
+      var fixed = items.map(function (it) { return Forms.fixedOptions(it.op.map(Bank.plain)); });
+      t.forms = Forms.build(t.n, t.key, fixed, k, so, (Date.now() & 0x7fffffff) | 1);
+      t.students.forEach(function (s) { delete s.raw; delete s.form; });
+      save(); render(); toast('وُلّدت ' + k + ' نماذج');
+    });
+  }
+
   function viewSheet(m) {
-    var t = cur, g = Sheet.geom(t.n), hasS = t.students.length > 0;
-    var examCard = t.bank ? hdrCard(t) + '<div class="card"><h2>ورقة الأسئلة (من البنك)</h2><p class="hint">تُطبع أسئلة الاختبار ' + t.n + ' فقرة بخيارات أ ب ج د، والطالب يظلّل إجابته في ورقة الإجابة أدناه.</p><div class="btns"><button class="btn" data-act="dlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="dlkey">تنزيل المفتاح والمواصفات (Word)</button></div><div class="btns"><button class="btn alt sm" data-act="printexam">طباعة مباشرة</button><button class="btn alt sm" data-act="printkey">طباعة المفتاح مباشرة</button></div></div>' : '';
+    var t = cur, g = Sheet.geom(t.n, nf(t)), hasS = t.students.length > 0;
+    var examCard = t.bank ? hdrCard(t) + formsCard(t) + '<div class="card"><h2>ورقة الأسئلة (من البنك)</h2><p class="hint">تُطبع أسئلة الاختبار ' + t.n + ' فقرة بخيارات أ ب ج د' + (nf(t) > 1 ? ' (ملف Word واحد يضم كل النماذج، ولكل نموذج ملف مستقل في بطاقة النماذج أعلاه)' : '') + '، والطالب يظلّل إجابته في ورقة الإجابة أدناه.</p><div class="btns"><button class="btn" data-act="dlexam">تنزيل ورقة الأسئلة (Word)</button><button class="btn" data-act="dlkey">تنزيل المفتاح والمواصفات (Word)</button></div><div class="btns"><button class="btn alt sm" data-act="printexam">طباعة مباشرة</button><button class="btn alt sm" data-act="printkey">طباعة المفتاح مباشرة</button></div></div>' : '';
     m.innerHTML = examCard + '<div class="card"><h2>طباعة ورقة الإجابة</h2><p class="hint">' + t.n + ' فقرة في ' + g.cols + ' أعمدة. اطبعها بحجم A4 بنسبة 100% (بلا «ملاءمة الصفحة») وعلى ورقة بيضاء. الورقة المطبوعة لكل طالب يأتي رقمه مظلَّلًا مسبقًا فلا يخطئ في تظليله.</p>' +
       '<div class="chips"><button class="chip" data-act="smode" data-m="blank" aria-pressed="' + (sheetOpt.mode === 'blank') + '">نسخ فارغة</button><button class="chip" data-act="smode" data-m="stu" aria-pressed="' + (sheetOpt.mode === 'stu') + '"' + (hasS ? '' : ' disabled') + '>ورقة لكل طالب (' + t.students.length + ')</button></div>' +
       (sheetOpt.mode === 'blank' ? '<div style="max-width:200px;margin-top:10px"><label for="cp">عدد النسخ</label><input id="cp" type="number" min="1" max="200" value="' + sheetOpt.copies + '"></div>' : '') +
       '<div class="btns"><button class="btn" data-act="printsheets">طباعة</button></div></div>' +
       '<div class="card"><h2>معاينة</h2><div class="pvwrap" id="pvw"><div class="pv" id="pv"></div></div></div>';
-    var first = sheetOpt.mode === 'stu' && hasS ? t.students[0] : null;
+    var first = sheetOpt.mode === 'stu' && hasS ? (nf(t) > 1 ? { no: t.students[0].no, name: t.students[0].name, form: planForm(t, t.students[0]) } : t.students[0]) : null;
     $('#pv').innerHTML = Sheet.sheetHtml(t, g, first);
     var w = $('#pvw').clientWidth, k = Math.min(1, w / 793.7);
     $('#pv').style.transform = 'scale(' + k + ')'; $('#pvw').style.height = Math.round(1122.5 * k) + 'px';
     var cp = $('#cp'); if (cp) cp.addEventListener('change', function () { sheetOpt.copies = Math.max(1, Math.min(200, parseInt(cp.value, 10) || 1)); cp.value = sheetOpt.copies; });
   }
   function printSheets() {
-    var t = cur, g = Sheet.geom(t.n), html = '';
-    if (sheetOpt.mode === 'stu') t.students.forEach(function (s) { html += Sheet.sheetHtml(t, g, s); });
+    var t = cur, g = Sheet.geom(t.n, nf(t)), html = '';
+    if (sheetOpt.mode === 'stu') t.students.forEach(function (s) { html += Sheet.sheetHtml(t, g, nf(t) > 1 ? { no: s.no, name: s.name, form: planForm(t, s) } : s); });
     else for (var i = 0; i < sheetOpt.copies; i++) html += Sheet.sheetHtml(t, g, null);
     doPrint(html, true);
   }
@@ -601,8 +724,9 @@
     var p = a.perItem, wb = XLSX.utils.book_new();
     var sum = [['البند', 'القيمة'], ['عنوان الاختبار', t.title], ['المادة', t.subject], ['الصف', t.cls], ['عدد الطلبة المحلَّلين', a.N], ['عدد الفقرات المحلَّلة', a.m], ['العلامة الكلية', a.total], ['المتوسط', a.meanMark], ['الانحراف المعياري', a.sdMark], ['الوسيط', a.median * p], ['أدنى', a.min * p], ['أعلى', a.max * p], ['KR-20', a.kr], ['SEM', a.sem === null ? '' : a.sem * p], ['نسبة النجاح', a.pass], ['الالتواء', a.skew], ['التفلطح', a.kurt]];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sum), 'الملخص');
-    var st = [['الرقم', 'الاسم', 'الصحيحة', 'العلامة', 'النسبة', 'الترتيب'].concat(a.outs.map(function (o) { return o.name; }))];
-    a.rows.slice().sort(function (x, y) { return x.s.no - y.s.no; }).forEach(function (r) { st.push([r.s.no, r.s.name, r.tot, r.mark, r.pct, r.rank].concat(r.out.map(function (v) { return v === null ? '' : v; }))); });
+    var FC = nf(t) > 1, fcell = function (s) { return s.src === 'online' ? 'إلكتروني' : fLet(stuForm(t, s)); };
+    var st = [['الرقم', 'الاسم', 'الصحيحة', 'العلامة', 'النسبة', 'الترتيب'].concat(FC ? ['النموذج'] : []).concat(a.outs.map(function (o) { return o.name; }))];
+    a.rows.slice().sort(function (x, y) { return x.s.no - y.s.no; }).forEach(function (r) { st.push([r.s.no, r.s.name, r.tot, r.mark, r.pct, r.rank].concat(FC ? [fcell(r.s)] : []).concat(r.out.map(function (v) { return v === null ? '' : v; }))); });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(st), 'الطلاب');
     var it = [['الفقرة', 'المفتاح', 'الصعوبة P', 'التمييز D', 'الارتباط r', 'الثبات عند الحذف', 'الحكم', 'الأسباب']];
     a.items.forEach(function (x) { it.push([x.n, x.keyL, x.P, x.D, x.r, x.krDel === undefined ? '' : x.krDel, VERD[x.st], x.reasons.join(' ')]); });
@@ -623,8 +747,9 @@
   }
   function exportCsv(t, a) {
     var q = function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var lines = [['الرقم', 'الاسم', 'الصحيحة', 'العلامة', 'النسبة', 'الترتيب'].concat(a.outs.map(function (o) { return o.name; })).map(q).join(',')];
-    a.rows.slice().sort(function (x, y) { return x.s.no - y.s.no; }).forEach(function (r) { lines.push([r.s.no, r.s.name, r.tot, r.mark, Math.round(r.pct * 1000) / 10, r.rank].concat(r.out.map(function (v) { return v === null ? '' : Math.round(v * 1000) / 10; })).map(q).join(',')); });
+    var FC = nf(t) > 1, fcell = function (s) { return s.src === 'online' ? 'إلكتروني' : fLet(stuForm(t, s)); };
+    var lines = [['الرقم', 'الاسم', 'الصحيحة', 'العلامة', 'النسبة', 'الترتيب'].concat(FC ? ['النموذج'] : []).concat(a.outs.map(function (o) { return o.name; })).map(q).join(',')];
+    a.rows.slice().sort(function (x, y) { return x.s.no - y.s.no; }).forEach(function (r) { lines.push([r.s.no, r.s.name, r.tot, r.mark, Math.round(r.pct * 1000) / 10, r.rank].concat(FC ? [fcell(r.s)] : []).concat(r.out.map(function (v) { return v === null ? '' : Math.round(v * 1000) / 10; })).map(q).join(',')); });
     download(safeName(t.title) + ' - الدرجات.csv', new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   }
   function backup() { download('نسخة_تحليل_' + new Date().toISOString().slice(0, 10) + '.json', new Blob([JSON.stringify(db)], { type: 'application/json' })); toast('نُزّلت النسخة الاحتياطية'); }
@@ -765,9 +890,9 @@
   }
 
   /* ورقة الأسئلة المطبوعة */
-  function examHtml(t) {
-    var items = t.bank.ids.map(function (id) { return BX.byId[id]; }).filter(Boolean);
-    var h = '<div class="rp exam"><div class="eh"><div>' + esc(db.set.school || '') + '</div><div>' + esc(db.set.teacher ? 'المعلم: ' + db.set.teacher : '') + '</div></div><h1>' + esc(t.title) + '</h1><div class="hd">' + esc([t.subject, t.cls].filter(Boolean).join(' · ')) + ' · ' + items.length + ' فقرة · العلامة الكلية ' + esc(t.total) + (t.minutes ? ' · الزمن ' + esc(t.minutes) + ' دقيقة' : '') + '</div>' +
+  function examHtml(t, f) {
+    var items = formItems(t, t.bank.ids.map(function (id) { return BX.byId[id]; }).filter(Boolean), f);
+    var h = '<div class="rp exam"><div class="eh"><div>' + esc(db.set.school || '') + '</div><div>' + esc(db.set.teacher ? 'المعلم: ' + db.set.teacher : '') + '</div></div><h1>' + esc(t.title) + (f !== undefined && f !== null && nf(t) > 1 ? ' — النموذج (' + fLet(f) + ')' : '') + '</h1><div class="hd">' + esc([t.subject, t.cls].filter(Boolean).join(' · ')) + ' · ' + items.length + ' فقرة · العلامة الكلية ' + esc(t.total) + (t.minutes ? ' · الزمن ' + esc(t.minutes) + ' دقيقة' : '') + '</div>' +
       '<div class="ef"><span>الاسم: ................................................</span><span>الشعبة: ..........</span><span>التاريخ: ..../..../........</span></div>' +
       '<p class="ei">اقرأ كل فقرة جيدًا ثم ظلّل الدائرة التي تدل على الإجابة الصحيحة في ورقة الإجابة. لكل فقرة إجابة واحدة صحيحة.</p>';
     items.forEach(function (it, i) {
@@ -866,8 +991,9 @@
   function liveCard(t, o) {
     var link = examLink(o), n = t.bank.ids.length;
     var h = '<div class="card"><h2>٢. الاختبار منشور</h2><p class="hint">' + n + ' فقرة · ' + esc(o.minutes) + ' دقيقة · نُشر ' + hhmm(o.created) + (o.shuffle ? ' · ترتيب مختلف لكل طالب' : '') + (o.minSec ? ' · حد أدنى ' + o.minSec + ' ث للفقرة' + (o.lock ? ' (مع المنع)' : ' (تسجيل فقط)') : '') + '</p>' +
+      '<div class="xcode"><span>رمز الاختبار</span><b dir="ltr" id="o-code">' + esc(o.id.toUpperCase()) + '</b><small>يكتبه الطالب في بطاقة «اختبار إلكتروني» داخل دوسياتي، أو يفتح الرابط/QR أدناه مباشرة.</small></div>' +
       '<label for="o-link">رابط الطلبة</label><input id="o-link" type="text" readonly dir="ltr" value="' + esc(link) + '" onfocus="this.select()">' +
-      '<div class="btns"><button class="btn" data-act="ocopy">نسخ الرابط</button><button class="btn alt" data-act="oslips">طباعة بطاقات الرموز</button><button class="btn alt" data-act="oposter">طباعة رمز QR للعرض</button></div>' +
+      '<div class="btns"><button class="btn" data-act="ocopy">نسخ الرابط</button><button class="btn alt" data-act="oslips">طباعة بطاقات الرموز</button><button class="btn alt" data-act="oposter">طباعة رمز QR للعرض</button><button class="btn alt" data-act="ogas">نسخ رابط الخادم (لدوسياتي)</button></div>' +
       '<div class="qrbox" id="oqr" aria-label="رمز QR لرابط الاختبار">' + qrSvg(link) + '</div></div>';
     h += '<div class="card"><h2>٣. المتابعة</h2><div id="ostat"></div>' +
       '<div class="btns"><button class="btn alt" data-act="orefresh">تحديث الآن</button><button class="btn alt" data-act="otoggle" id="otog">…</button></div></div>';
@@ -923,6 +1049,13 @@
       toast('رُبط الخادم بنجاح'); render();
     }, function (e) { gasPut(null); gmsg('<div class="notice bad">' + esc(e.message) + '</div>'); });
   }
+  /* رمز الاختبار: 6 خانات بلا حروف ملتبسة (i l o 0 1) ليسهل على الطالب كتابته في دوسياتي */
+  function examCode() {
+    var a = 'abcdefghjkmnpqrstuvwxyz23456789', s = '', b = new Uint8Array(6), i;
+    try { crypto.getRandomValues(b); } catch (e) { for (i = 0; i < 6; i++) b[i] = Math.floor(Math.random() * 256); }
+    for (i = 0; i < 6; i++) s += a.charAt(b[i] % a.length);
+    return s;
+  }
   function onlinePublish() {
     var t = cur, c = gasCfg(), mins = parseInt($('#o-min').value, 10), shuf = $('#o-shuf').checked, ms = parseInt($('#o-ms').value, 10), lock = $('#o-lock').checked;
     if (!(ms >= 0 && ms <= 60)) ms = 5;
@@ -930,7 +1063,7 @@
     withBank(function () {
       var items = t.bank.ids.map(function (id) { return BX.byId[id]; });
       if (items.some(function (x) { return !x; })) { omsg('<div class="notice bad">بعض فقرات الاختبار لم تعد في البنك الحالي. أعد بناء الاختبار.</div>'); return; }
-      var codes = genCodes(t), id = uid().replace(/[^a-z0-9]/g, '').slice(-9).padStart(8, 'x');
+      var codes = genCodes(t), id = examCode();
       var def = { items: items.map(function (it) { return { q: it.q, op: it.op }; }) };
       omsg('<div class="notice">جارٍ النشر…</div>');
       gcall({ a: 'publish', id: id, title: t.title, minutes: mins, def: def, shuffle: shuf, minSec: ms, lock: lock, codes: t.students.map(function (s) { return { no: s.no, code: codes[s.no] }; }) }).then(function (j) {
@@ -950,7 +1083,7 @@
       if (over && !confirm(over + ' طالبًا لديهم إجابات مُدخلة يدويًا أو بالمسح وستُستبدل بإجاباتهم الإلكترونية. متابعة؟')) { box.innerHTML = ''; return; }
       rows.forEach(function (r) {
         var s = findStu(t, r.no);
-        s.ans = r.ans.split('').map(Number); s.tm = r.tm ? r.tm.split(',').map(Number) : null; s.absent = false; s.src = 'online';
+        delete s.raw; delete s.form; s.ans = r.ans.split('').map(Number); s.tm = r.tm ? r.tm.split(',').map(Number) : null; s.absent = false; s.src = 'online';
       });
       o.pulled = { t: Date.now(), n: rows.length }; save();
       box.innerHTML = '<div class="notice ok">سُحبت إجابات ' + rows.length + ' طالبًا. يمكنك الآن فتح «التحليل».</div>';
@@ -984,13 +1117,13 @@
     var link = examLink(o), qr = qrSvg(link), short = link.replace(/^https?:\/\//, '').replace(/\?.*$/, '');
     var h = '<div class="rp"><h1>بطاقات رموز الدخول</h1><div class="hd">' + esc([db.set.school, t.title, t.subject, t.cls].filter(Boolean).join(' · ')) + ' · الزمن ' + esc(o.minutes) + ' دقيقة</div><div class="slips">';
     stuRows(t).forEach(function (s) {
-      h += '<div class="slip"><div class="qr">' + qr + '</div><div class="sb"><div class="sn">' + esc(s.name) + '</div><div>رمز الدخول: <b class="sc">' + esc(o.codes[s.no] || '') + '</b></div><div class="su" dir="ltr">' + esc(short) + '</div><div class="ss">امسح الرمز أو افتح الرابط، ثم اكتب رمزك. العدّاد يبدأ عند الدخول.</div></div></div>';
+      h += '<div class="slip"><div class="qr">' + qr + '</div><div class="sb"><div class="sn">' + esc(s.name) + '</div><div>رمز الدخول: <b class="sc">' + esc(o.codes[s.no] || '') + '</b></div><div class="su" dir="ltr">' + esc(short) + '</div><div class="ss">رمز الاختبار: <b class="sx">' + esc(o.id.toUpperCase()) + '</b> (في دوسياتي) · أو امسح الرمز ثم اكتب رمزك. العدّاد يبدأ عند الدخول.</div></div></div>';
     });
     return h + '</div></div>';
   }
   function posterHtml(t, o) {
     var link = examLink(o);
-    return '<div class="rp poster"><h1>' + esc(t.title) + '</h1><div class="hd">' + esc([t.subject, t.cls].filter(Boolean).join(' · ')) + ' · الزمن ' + esc(o.minutes) + ' دقيقة</div><div class="pq">' + qrSvg(link) + '</div><p class="hd">امسح الرمز بكاميرا هاتفك ثم أدخل رمزك الخاص</p></div>';
+    return '<div class="rp poster"><h1>' + esc(t.title) + '</h1><div class="hd">' + esc([t.subject, t.cls].filter(Boolean).join(' · ')) + ' · الزمن ' + esc(o.minutes) + ' دقيقة</div><div class="pq">' + qrSvg(link) + '</div><p class="hd">امسح الرمز بكاميرا هاتفك ثم أدخل رمزك الخاص</p><p class="hd">أو افتح دوسياتي واكتب رمز الاختبار:</p><div class="pcode" dir="ltr">' + esc(o.id.toUpperCase()) + '</div></div>';
   }
   function extendNow(mins, no) {
     var o = cur.online, body = { a: 'extend', id: o.id, mins: mins }; if (no !== null) body.no = no;
@@ -1013,6 +1146,7 @@
       case 'gcode': fetch('code.gs.txt').then(function (r) { return r.text(); }).then(function (s) { return navigator.clipboard.writeText(s); }).then(function () { toast('نُسخ الكود. الصقه في Code.gs'); }, function () { toast('تعذّر النسخ. استعمل «تنزيله كملف»'); }); break;
       case 'gcodedl': fetch('code.gs.txt').then(function (r) { return r.blob(); }).then(function (b) { download('Code.gs', b); }); break;
       case 'opub': onlinePublish(); break;
+      case 'ogas': navigator.clipboard.writeText(gasCfg().url).then(function () { toast('نُسخ رابط الخادم'); }, function () { toast('تعذّر النسخ'); }); break;
       case 'ocopy': navigator.clipboard.writeText(examLink(o)).then(function () { toast('نُسخ الرابط'); }, function () { var i = $('#o-link'); i.select(); toast('حدّد الرابط وانسخه'); }); break;
       case 'oslips': doPrint(slipsHtml(t, o), false); break;
       case 'oposter': doPrint(posterHtml(t, o), false); break;
@@ -1072,54 +1206,86 @@
   }
 
   /* ---------- تصدير Word (.docx) ---------- */
-  function wordDownload(t, kind) {
+  function keyTableRows(key, n) {
+    var kr = [];
+    for (var r = 0; r < n; r += 10) {
+      var row = [];
+      for (var c2 = r; c2 < r + 10; c2++) { if (c2 < n) { row.push({ t: String(c2 + 1), shade: 'E3EFEE', align: 'center', size: 9 }); row.push({ t: '<b>' + (key[c2] ? LETS[key[c2] - 1] : '—') + '</b>', align: 'center', size: 11 }); } else { row.push(''); row.push(''); } }
+      kr.push(row);
+    }
+    return kr;
+  }
+  /* form: undefined/null = كل النماذج (أو الأصل إن لم توجد نماذج)، رقم = نموذج واحد */
+  function wordDownload(t, kind, form) {
     try {
       var items = t.bank.ids.map(function (id) { return BX.byId[id]; }).filter(Boolean), n = items.length, d = kind === 'exam' ? Docx.doc({ pageNo: false, pageBorder: true, margins: { top: 720, right: 720, bottom: 720, left: 709 } }) : Docx.doc({ footer: t.title });
-      var sub = [t.subject, t.cls].filter(Boolean).join(' · ');
+      var sub = [t.subject, t.cls].filter(Boolean).join(' · '), F = nf(t) > 1 ? t.forms : null, fname = '';
       if (kind === 'exam') {
-        var H = getHdr(t), le = d.image(EXAM_LOGOS.emblem), li = d.image(EXAM_LOGOS.iso), L = 10477, grade = String(t.cls || '').replace(/^الصف\s*/, '');
-        d.p(H.ministry, { align: 'center', bold: true, size: 12, after: 0, rawRuns: d.anchor(le, 311150, 425450, 6455410, -106680, 2) + d.anchor(li, 430530, 358775, -142240, -106680, 3) });
-        d.table([[{ t: H.directorate, bold: true, size: 12 }, { t: H.schoolFull, bold: true, size: 12, align: 'end' }]], { borders: false, widths: [4500, 5400], indent: 538 });
-        d.p(H.kind + ' لمادة (' + (t.subject || '') + ') للصف (' + grade + ')', { align: 'center', bold: true, size: 12, after: 60 });
-        d.table([[{ t: 'الاسم: ..........................................', bold: true, size: 12 }, { t: H.dayName + ': ' + H.dateText, bold: true, size: 12, align: 'center' }, { t: 'الزمن: ' + (t.minutes ? t.minutes + ' دقيقة' : '.............'), bold: true, size: 12, align: 'end' }]], { borders: false, widths: [4500, 3500, 2477] });
-        d.p('* ملاحظة 1 : عزيزي الطالب لديك سؤال يتألف من ' + fqraWords(n) + '، يرجى قراءة الفقرات بتمعن ومن ثم الإجابة عليها جميعها في نموذج الإجابة المرفق', { size: 12, bTop: true, after: 0 });
-        d.p('* ملاحظة 2 : يتم التعامل مع حالات الغش المضبوط حسب المادة السادسة الفقرة (ي) من تعليمات الانضباط المدرسية لسنة 2017', { size: 12, bBottom: true, after: 120 });
+        var H = getHdr(t), le = d.image(EXAM_LOGOS.emblem), li = d.image(EXAM_LOGOS.iso), grade = String(t.cls || '').replace(/^الصف\s*/, '');
+        var flist = F ? ((form === undefined || form === null) ? Array.apply(null, Array(F.k)).map(function (_, x) { return x; }) : [form]) : [null];
+        fname = F ? (flist.length > 1 ? ' - الأسئلة - كل النماذج' : ' - الأسئلة - نموذج ' + fLet(flist[0])) : ' - الأسئلة';
         var LB = ['أ- ', 'ب- ', 'جـ- ', 'د- '];
-        items.forEach(function (it, i) {
-          d.p((i + 1) + '. ' + it.q, { keepNext: true, size: 12, after: 0, line: 360 });
-          var short = it.op.every(function (o) { return Bank.plain(o).length <= 26; }), c = it.op.map(function (o, k) { return { t: LB[k] + o, size: 12 }; });
-          if (short) d.table([c], { borders: false, indent: 567, widths: [2475, 2475, 2475, 2475], line: 360 });
-          else d.table([[c[0], c[1]], [c[2], c[3]]], { borders: false, indent: 567, widths: [4950, 4950], line: 360 });
+        flist.forEach(function (fi, idx) {
+          if (idx > 0) d.pageBreak();
+          d.p(H.ministry, { align: 'center', bold: true, size: 12, after: 0, rawRuns: d.anchor(le, 311150, 425450, 6455410, -106680, 2 + 2 * idx) + d.anchor(li, 430530, 358775, -142240, -106680, 3 + 2 * idx) });
+          d.table([[{ t: H.directorate, bold: true, size: 12 }, { t: H.schoolFull, bold: true, size: 12, align: 'end' }]], { borders: false, widths: [4500, 5400], indent: 538 });
+          d.p(H.kind + ' لمادة (' + (t.subject || '') + ') للصف (' + grade + ')', { align: 'center', bold: true, size: 12, after: 60 });
+          if (fi !== null) d.p('النموذج ( ' + fLet(fi) + ' )', { align: 'center', bold: true, size: 16, after: 60 });
+          d.table([[{ t: 'الاسم: ..........................................', bold: true, size: 12 }, { t: H.dayName + ': ' + H.dateText, bold: true, size: 12, align: 'center' }, { t: 'الزمن: ' + (t.minutes ? t.minutes + ' دقيقة' : '.............'), bold: true, size: 12, align: 'end' }]], { borders: false, widths: [4500, 3500, 2477] });
+          d.p('* ملاحظة 1 : عزيزي الطالب لديك سؤال يتألف من ' + fqraWords(n) + '، يرجى قراءة الفقرات بتمعن ومن ثم الإجابة عليها جميعها في نموذج الإجابة المرفق', { size: 12, bTop: true, after: 0 });
+          d.p('* ملاحظة 2 : يتم التعامل مع حالات الغش المضبوط حسب المادة السادسة الفقرة (ي) من تعليمات الانضباط المدرسية لسنة 2017', { size: 12, bBottom: true, after: 120 });
+          formItems(t, items, fi).forEach(function (it, i) {
+            d.p((i + 1) + '. ' + it.q, { keepNext: true, size: 12, after: 0, line: 360 });
+            var short = it.op.every(function (o) { return Bank.plain(o).length <= 26; }), c = it.op.map(function (o, k) { return { t: LB[k] + o, size: 12 }; });
+            if (short) d.table([c], { borders: false, indent: 567, widths: [2475, 2475, 2475, 2475], line: 360 });
+            else d.table([[c[0], c[1]], [c[2], c[3]]], { borders: false, indent: 567, widths: [4950, 4950], line: 360 });
+          });
+          d.p('"لا ينال العلم براحة الجسم"', { align: 'center', size: 14, before: 200, after: 0, line: 360 });
+          d.p('أطيب الأمنيات لكم بالتوفق', { align: 'center', size: 14, after: 0, line: 360 });
+          d.p('مدرس المادة', { align: 'center', size: 12, after: 0, line: 360 });
+          if (db.set.teacher) d.p(db.set.teacher, { align: 'center', size: 14, after: 0 });
         });
-        d.p('"لا ينال العلم براحة الجسم"', { align: 'center', size: 14, before: 200, after: 0, line: 360 });
-        d.p('أطيب الأمنيات لكم بالتوفق', { align: 'center', size: 14, after: 0, line: 360 });
-        d.p('مدرس المادة', { align: 'center', size: 12, after: 0, line: 360 });
-        if (db.set.teacher) d.p(db.set.teacher, { align: 'center', size: 14, after: 0 });
       } else {
+        fname = ' - المفتاح والمواصفات';
+        var kw = []; for (var q = 0; q < 10; q++) { kw.push(381); kw.push(582); }
         d.p('مفتاح الإجابة وجدول المواصفات', { align: 'center', bold: true, size: 17, after: 40 });
         d.p([db.set.school, t.title, sub].filter(Boolean).join(' · '), { align: 'center', color: '333333', size: 10.5 });
-        d.p('١. مفتاح الإجابة', { bold: true, size: 13, color: '0E5A5C', border: true, before: 160 });
-        var kr = [];
-        for (var r = 0; r < n; r += 10) {
-          var row = [];
-          for (var c2 = r; c2 < r + 10; c2++) { if (c2 < n) { row.push({ t: String(c2 + 1), shade: 'E3EFEE', align: 'center', size: 9 }); row.push({ t: '<b>' + (t.key[c2] ? LETS[t.key[c2] - 1] : '—') + '</b>', align: 'center', size: 11 }); } else { row.push(''); row.push(''); } }
-          kr.push(row);
-        }
-        var kw = []; for (var q = 0; q < 10; q++) { kw.push(381); kw.push(582); }
-        d.table(kr, { widths: kw });
-        d.p('٢. جدول المواصفات', { bold: true, size: 13, color: '0E5A5C', border: true, before: 120 });
+        d.p('١. مفتاح الإجابة' + (F ? ' (لكل نموذج بترتيب فقراته)' : ''), { bold: true, size: 13, color: '0E5A5C', border: true, before: 160 });
+        if (F) {
+          for (var fk = 0; fk < F.k; fk++) {
+            d.p('النموذج ( ' + fLet(fk) + ' )', { bold: true, size: 12, before: 100, after: 40, keepNext: true });
+            d.table(keyTableRows(Forms.dispKey(F, fk, t.key), n), { widths: kw });
+          }
+        } else d.table(keyTableRows(t.key, n), { widths: kw });
+        d.p('٢. جدول المواصفات' + (F ? ' (بترقيم النموذج أ)' : ''), { bold: true, size: 13, color: '0E5A5C', border: true, before: 120 });
         var secArr = (t.bank.secs && t.bank.secs.length === n) ? t.bank.secs : items.map(itemSecs), tot = { 'ت': 0, 'ط': 0, 'ح': 0 }, totSec = 0;
-        var H = function (x) { return { t: x, bold: true, shade: 'E3EFEE', align: 'center', size: 9 }; };
-        var rows = [[H('النتاج'), H('أرقام الفقرات'), H('العدد'), H('تذكّر وفهم'), H('تطبيق'), H('تحليل'), H('الزمن (د)')]];
+        var H2 = function (x) { return { t: x, bold: true, shade: 'E3EFEE', align: 'center', size: 9 }; };
+        var rows = [[H2('النتاج'), H2('أرقام الفقرات'), H2('العدد'), H2('تذكّر وفهم'), H2('تطبيق'), H2('تحليل'), H2('الزمن (د)')]];
         t.outcomes.forEach(function (o) {
           var l = { 'ت': 0, 'ط': 0, 'ح': 0 }, sec = 0; o.items.forEach(function (ix) { if (items[ix]) { l[items[ix].lvl]++; tot[items[ix].lvl]++; sec += secArr[ix] || 0; } });
           totSec += sec;
           rows.push([{ t: o.name, size: 9 }, { t: rangeStr(o.items), align: 'center', size: 9 }, { t: String(o.items.length), align: 'center' }, { t: String(l['ت']), align: 'center' }, { t: String(l['ط']), align: 'center' }, { t: String(l['ح']), align: 'center' }, { t: String(Math.round(sec / 60)), align: 'center' }]);
         });
         var P = function (v) { return v + ' (' + Math.round(100 * v / n) + '%)'; };
-        rows.push([H('المجموع'), H(''), H(String(n)), H(P(tot['ت'])), H(P(tot['ط'])), H(P(tot['ح'])), H(Math.round(totSec / 60) + (t.minutes ? ' (المقرَّر ' + t.minutes + ')' : ''))]);
+        rows.push([H2('المجموع'), H2(''), H2(String(n)), H2(P(tot['ت'])), H2(P(tot['ط'])), H2(P(tot['ح'])), H2(Math.round(totSec / 60) + (t.minutes ? ' (المقرَّر ' + t.minutes + ')' : ''))]);
         d.table(rows, { widths: [3100, 1400, 800, 1000, 1000, 1000, 1338], headRows: 1 });
-        d.p('٣. تعليل البدائل', { bold: true, size: 13, color: '0E5A5C', border: true, before: 160, pageBreakBefore: true });
+        var sec3 = '٣';
+        if (F) {
+          d.p('٣. مطابقة أرقام الفقرات بين النماذج', { bold: true, size: 13, color: '0E5A5C', border: true, before: 160, keepNext: true });
+          d.p('الخلية «الموضع / المفتاح»: موضع الفقرة في ذلك النموذج وحرف إجابتها الصحيحة فيه. العمود الأول هو رقم الفقرة في النموذج أ (وبه ترتيب جدول المواصفات وتعليل البدائل).', { size: 9.5, color: '333333', after: 60 });
+          var inv = F.ord.map(function (o) { var m = {}; o.forEach(function (orig, p) { m[orig] = p; }); return m; });
+          var kd = F.ord.map(function (o, f) { return Forms.dispKey(F, f, t.key); });
+          var mr = [[H2('الفقرة (أ)')].concat(Array.apply(null, Array(F.k - 1)).map(function (_, f) { return H2('النموذج ' + fLet(f + 1)); }))];
+          for (var oi = 0; oi < n; oi++) {
+            var row2 = [{ t: String(oi + 1), align: 'center', shade: 'F2F7F6', size: 9 }];
+            for (var ff = 1; ff < F.k; ff++) { var pos = inv[ff][oi]; row2.push({ t: (pos + 1) + ' / ' + (kd[ff][pos] ? LETS[kd[ff][pos] - 1] : '—'), align: 'center', size: 9 }); }
+            mr.push(row2);
+          }
+          var w0 = 1000, wr = Math.floor((9638 - w0) / (F.k - 1)), mw = [w0]; for (var wi = 1; wi < F.k; wi++) mw.push(wr);
+          d.table(mr, { widths: mw, headRows: 1 });
+          sec3 = '٤';
+        }
+        d.p(sec3 + '. تعليل البدائل' + (F ? ' (بترقيم النموذج أ)' : ''), { bold: true, size: 13, color: '0E5A5C', border: true, before: 160, pageBreakBefore: true });
         items.forEach(function (it, i) {
           var k = t.key[i] ? t.key[i] - 1 : it.a;
           d.p('<b>' + (i + 1) + '.</b> ' + it.q, { keepNext: true, size: 11, before: 100, after: 30 });
@@ -1127,7 +1293,7 @@
           it.op.forEach(function (o, j) { if (j !== k && it.fb[j]) d.p('– ' + LETS[j] + ') ' + it.fb[j], { size: 10, indent: 360, after: 10, color: '333333' }); });
         });
       }
-      download(safeName(t.title) + (kind === 'exam' ? ' - الأسئلة.docx' : ' - المفتاح والمواصفات.docx'), d.blob());
+      download(safeName(t.title) + fname + '.docx', d.blob());
       toast('نُزّل ملف Word');
     } catch (e) { toast('تعذّر إنشاء ملف Word: ' + e.message); }
   }
@@ -1180,11 +1346,13 @@
       case 'bcreate': bankCreate(); break;
       case 'bprint': withBank(function () { doPrint(examHtml(bankPseudoTest()), false); }); break;
       case 'bprintkey': withBank(function () { doPrint(keyHtml(bankPseudoTest()), false); }); break;
+      case 'fmgen': fmGenerate(t); break;
+      case 'fmword': withBank(function () { wordDownload(t, 'exam', el.dataset.f === 'all' ? null : +el.dataset.f); }); break;
       case 'dlexam': withBank(function () { wordDownload(t, 'exam'); }); break;
       case 'dlkey': withBank(function () { wordDownload(t, 'key'); }); break;
       case 'bdlexam': withBank(function () { wordDownload(bankPseudoTest(), 'exam'); }); break;
       case 'bdlkey': withBank(function () { wordDownload(bankPseudoTest(), 'key'); }); break;
-      case 'printexam': withBank(function () { doPrint(examHtml(t), false); }); break;
+      case 'printexam': withBank(function () { doPrint(nf(t) > 1 ? Array.apply(null, Array(nf(t))).map(function (_, f) { return examHtml(t, f); }).join('<div class="pb"></div>') : examHtml(t), false); }); break;
       case 'printkey': withBank(function () { doPrint(keyHtml(t), false); }); break;
       case 'banklog': bankLogSave(t); break;
       default: if (t && /^(g|o)[a-z]+$/.test(act)) onlineAct(act, el);
@@ -1195,6 +1363,12 @@
     if (el.dataset && el.dataset.act === 'selstu') {
       var c = ui.scans.filter(function (x) { return x.id === el.dataset.id; })[0];
       c.stuNo = el.value === '' ? '' : (el.value.indexOf('add:') === 0 ? el.value : parseInt(el.value, 10)); drawScans();
+    }
+    if (el.dataset && el.dataset.act === 'selform') {
+      var c2 = ui.scans.filter(function (x) { return x.id === el.dataset.id; })[0]; c2.form = el.value === '' ? '' : parseInt(el.value, 10); drawScans();
+    }
+    if (el.dataset && el.dataset.act === 'sform' && cur) {
+      var s3 = findStu(cur, +el.dataset.no); if (s3) { var raw3 = rawOf(cur, s3); s3.form = parseInt(el.value, 10); if (raw3) putAns(cur, s3, raw3.slice(), s3.form); save(); render(); }
     }
   });
 

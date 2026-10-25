@@ -184,3 +184,9 @@ body.sheets-page{}
 .slip .sn{font-weight:700;font-size:11pt}.slip .sc{font-size:15pt;letter-spacing:2px;direction:ltr;unicode-bidi:isolate}
 .slip .su{font-size:7.5pt;color:#444;word-break:break-all}.slip .ss{font-size:8pt;color:#333}
 .poster{text-align:center}.poster .pq{width:110mm;margin:14mm auto}.poster .pq svg{width:100%;height:auto;display:block}
+
+.xcode{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:0 0 12px;padding:10px 12px;border:1px solid var(--line,#ccc);border-radius:10px}
+.xcode b{font-size:1.6rem;letter-spacing:.18em;direction:ltr;unicode-bidi:isolate}.xcode small{flex-basis:100%;color:#555}
+.slip .sx{letter-spacing:2px;direction:ltr;unicode-bidi:isolate}.poster .pcode{font-size:34pt;letter-spacing:6px;font-weight:700;margin-top:4mm}
+
+.fsel{font:inherit;padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);min-height:30px}
