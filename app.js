@@ -1,7 +1,7 @@
 /* app.js — واجهة «تحليل». بيانات المعلم كلها في localStorage على جهازه، ولا شيء يُرسَل إلى أي خادم. */
 (function () {
   'use strict';
-  var APP_VERSION = 8;
+  var APP_VERSION = 9;
   var KEY = 'tahlil.db.v1';
   var LET = ['—', 'أ', 'ب', 'ج', 'د'];
   var esc = Sheet.esc;
@@ -1373,7 +1373,14 @@
   });
 
   /* ---------- الإقلاع ---------- */
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(function () {});
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    // عند نزول إصدار جديد: يتولى العامل الجديد الصفحة فنُعيد تحميلها مرة واحدة تلقائيًا
+    var hadSW = !!navigator.serviceWorker.controller, reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (hadSW && !reloaded) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js').then(function (r) { r.update(); }).catch(function () {});
+  }
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   window.__tahlil = { get db() { return db; }, render: render, scanFiles: scanFiles };
   render();

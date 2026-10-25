@@ -1,5 +1,5 @@
 /* sw.js — صفحة الطالب فقط: خفيفة وتعمل لو انقطع الإنترنت بعد أول فتح */
-var VERSION = 6;
+var VERSION = 7;
 var CACHE = 'tahlil-exam-v' + VERSION;
 var FILES = ['./', 'index.html', 'exam.css', 'exam.js', '../icons/icon-192.png',
   '../fonts/ibm-plex-sans-arabic-arabic-400-normal.woff2', '../fonts/ibm-plex-sans-arabic-arabic-600-normal.woff2',

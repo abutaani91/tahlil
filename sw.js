@@ -1,5 +1,5 @@
 /* sw.js — كاش أولًا، رقم إصدار واحد يُرفع بـ node bump.js */
-var VERSION = 8;
+var VERSION = 9;
 var CACHE = 'tahlil-v' + VERSION;
 var FILES = ['./', 'index.html', 'style.css', 'app.js', 'stats.js', 'sheet.js', 'forms.js', 'bank.js', 'bank.json', 'omr.js', 'qr.js', 'docx.js', 'logos.js', 'code.gs.txt', 'xlsx.min.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
